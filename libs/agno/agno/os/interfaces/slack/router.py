@@ -230,7 +230,7 @@ def attach_routes(
 
     # --- Closure-dependent helpers (use slack_tools, entity, ssl from attach_routes scope) ---
 
-    async def _safe_chat_update(
+    async def _update_card(
         channel: str,
         ts: str,
         text: str,
@@ -450,7 +450,7 @@ def attach_routes(
             return
 
         result = select_confirmation_row(ctx, selected="approve", include_reason_input=False)
-        await _safe_chat_update(ctx.channel, ctx.card_ts, "Approval pending", result.blocks, "row approve")
+        await _update_card(ctx.channel, ctx.card_ts, "Approval pending", result.blocks, "row approve")
 
         if result.should_auto_submit:
             await _handle_submit(synthetic_submit_payload(payload, ctx.run_id, ctx.awaiting_ts, result.blocks))
@@ -464,7 +464,7 @@ def attach_routes(
         result = select_confirmation_row(ctx, selected="deny", include_reason_input=True)
         # Deny stays interactive so user can add optional reason before Submit
         blocks = append_submit_if_needed(result.blocks, ctx.run_id, ctx.awaiting_ts)
-        await _safe_chat_update(ctx.channel, ctx.card_ts, "Rejection pending", blocks, "row reject")
+        await _update_card(ctx.channel, ctx.card_ts, "Rejection pending", blocks, "row reject")
 
     async def _handle_submit(payload: Dict[str, Any]) -> None:
         # Opens fresh stream — Slack's 5min timeout makes reusing pre-pause ts unreliable
