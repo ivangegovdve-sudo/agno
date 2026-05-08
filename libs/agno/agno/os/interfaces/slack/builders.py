@@ -127,7 +127,7 @@ def _build_input_field(req_id: str, ui_field: Any) -> InputBlock:
     )
 
 
-def _option_to_slack(option: Any, index: int) -> Option:
+def _user_feedback_option_to_slack_option(option: Any, index: int) -> Option:
     label = getattr(option, "label", f"option-{index}")
     description = getattr(option, "description", None)
     return Option(
@@ -142,7 +142,7 @@ def _build_feedback_question(req_id: str, question: Any, q_index: int) -> InputB
     options = getattr(question, "options", None) or []
     multi_select = bool(getattr(question, "multi_select", False))
 
-    slack_options = [_option_to_slack(opt, i) for i, opt in enumerate(options)]
+    slack_options = [_user_feedback_option_to_slack_option(opt, i) for i, opt in enumerate(options)]
 
     element: Any
     if multi_select:
