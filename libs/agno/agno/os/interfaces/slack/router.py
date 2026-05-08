@@ -229,7 +229,7 @@ def attach_routes(
         # If there's NO global Submit (only confirmation rows), auto-submit when all decided.
         from slack_sdk.web.async_client import AsyncWebClient
 
-        from agno.os.interfaces.slack.builders import _build_confirmation_toggle_card
+        from agno.os.interfaces.slack.builders import build_confirmation_toggle_card
         from agno.os.interfaces.slack.ids import encode_submit_button_value
 
         actions = payload.get("actions") or []
@@ -263,7 +263,7 @@ def attach_routes(
                 tool_name = (blk.get("title") or {}).get("text", "*tool*").replace("*", "")
                 body_text = (blk.get("body") or {}).get("text", "")
                 # Build toggle card with "approve" selected
-                toggle_card = _build_confirmation_toggle_card(
+                toggle_card = build_confirmation_toggle_card(
                     req_id=req_id,
                     run_id=run_id,
                     awaiting_ts=awaiting_ts,
@@ -333,7 +333,7 @@ def attach_routes(
         from slack_sdk.models.blocks.basic_components import PlainTextObject as PlainText
         from slack_sdk.web.async_client import AsyncWebClient
 
-        from agno.os.interfaces.slack.builders import _build_confirmation_toggle_card
+        from agno.os.interfaces.slack.builders import build_confirmation_toggle_card
         from agno.os.interfaces.slack.ids import ACTION_REJECT_REASON
 
         actions = payload.get("actions") or []
@@ -363,7 +363,7 @@ def attach_routes(
                 tool_name = (blk.get("title") or {}).get("text", "*tool*").replace("*", "")
                 body_text = (blk.get("body") or {}).get("text", "")
                 # Build toggle card with "deny" selected
-                toggle_card = _build_confirmation_toggle_card(
+                toggle_card = build_confirmation_toggle_card(
                     req_id=req_id,
                     run_id=run_id,
                     awaiting_ts=awaiting_ts,

@@ -200,7 +200,7 @@ def _build_confirmation_card(requirement: RunRequirement, run_id: str = "", awai
 
 
 # Confirmation card with toggle state — selected button gets styled + past tense label
-def _build_confirmation_toggle_card(
+def build_confirmation_toggle_card(
     req_id: str,
     run_id: str,
     awaiting_ts: Optional[str],
