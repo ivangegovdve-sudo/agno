@@ -80,6 +80,7 @@ def render_arg_value(value: Any) -> str:
         return str(value)
 
 
+# Converts a Pydantic field schema into a Slack Block Kit input element for HITL user_input cards
 def _build_input_field(req_id: str, ui_field: Any) -> InputBlock:
     name = getattr(ui_field, "name", "field")
     description = getattr(ui_field, "description", None)
