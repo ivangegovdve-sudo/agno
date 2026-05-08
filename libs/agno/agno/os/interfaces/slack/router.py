@@ -409,6 +409,201 @@ def attach_routes(
             return blocks
         return blocks + [_build_submit_button(run_id, awaiting_ts)]
 
+    def _extract_submit_context(payload: Dict[str, Any]) -> Optional[SubmitContext]:
+        # Extracts and validates context from submit button click payloads
+        actions = payload.get("actions") or []
+        if not actions:
+            return None
+        submit_block_id = actions[0].get("block_id") or ""
+        if not submit_block_id.startswith("pause:"):
+            return None
+        run_id = submit_block_id.removeprefix("pause:")
+
+        channel = (payload.get("channel") or {}).get("id")
+        message = payload.get("message") or {}
+        msg_ts = message.get("ts")
+        if not (run_id and channel and msg_ts):
+            return None
+
+        thread_ts = message.get("thread_ts") or msg_ts
+        button_value = actions[0].get("value") or ""
+        _, awaiting_ts = decode_submit_button_value(button_value)
+
+        return SubmitContext(
+            run_id=run_id,
+            channel=channel,
+            msg_ts=msg_ts,
+            thread_ts=thread_ts,
+            session_id=f"{entity_id}:{thread_ts}",
+            awaiting_ts=awaiting_ts,
+            user_id=(payload.get("user") or {}).get("id", ""),
+            team_id=(payload.get("team") or {}).get("id"),
+            state_values=(payload.get("state") or {}).get("values") or {},
+        )
+
+    async def _delete_awaiting_indicator(channel: str, awaiting_ts: Optional[str]) -> None:
+        # Silently deletes "Awaiting..." message, ignores message_not_found on retries
+        if not awaiting_ts:
+            return
+        from slack_sdk.web.async_client import AsyncWebClient
+
+        client = AsyncWebClient(token=slack_tools.token, ssl=ssl)
+        try:
+            await client.chat_delete(channel=channel, ts=awaiting_ts)
+        except Exception as exc:
+            if "message_not_found" not in str(exc):
+                log_error(f"[HITL] chat_delete (awaiting indicator) failed for ts={awaiting_ts}: {exc}")
+
+    async def _load_active_requirements(ctx: SubmitContext) -> List[Any]:
+        # Fetches paused run's requirements, returns empty list on failure
+        try:
+            run_output = await entity.aget_run_output(run_id=ctx.run_id, session_id=ctx.session_id)  # type: ignore[union-attr]
+        except Exception as exc:
+            log_error(f"[HITL] aget_run_output failed for run={ctx.run_id}: {exc}")
+            return []
+        return list(getattr(run_output, "active_requirements", None) or []) if run_output else []
+
+    async def _lock_submitted_form(ctx: SubmitContext, original_blocks: List[Dict[str, Any]], requirements: List[Any]) -> None:
+        # Converts interactive inputs/cards to readonly display after submit
+        has_inputs = any(b.get("type") == "input" for b in original_blocks)
+        has_interactive_cards = any(b.get("type") == "card" and b.get("actions") for b in original_blocks)
+        if not has_inputs and not has_interactive_cards:
+            return
+
+        from slack_sdk.web.async_client import AsyncWebClient
+
+        from agno.os.interfaces.slack.builders import response_blocks
+
+        readonly_blocks = response_blocks(original_blocks, ctx.state_values, requirements)
+        client = AsyncWebClient(token=slack_tools.token, ssl=ssl)
+        try:
+            await client.chat_update(channel=ctx.channel, ts=ctx.msg_ts, text="Submitted", blocks=readonly_blocks)
+        except Exception as exc:
+            log_error(f"[HITL] chat_update (submit readonly) failed for {ctx.msg_ts}: {exc}")
+
+    async def _validate_and_apply_decisions(
+        ctx: SubmitContext,
+        payload: Dict[str, Any],
+        requirements: List[Any],
+    ) -> Optional[List[Any]]:
+        # Parses payload, posts ephemeral on errors, applies decisions. Returns decisions or None on error.
+        from slack_sdk.web.async_client import AsyncWebClient
+
+        from agno.os.interfaces.slack.interactions import apply_decisions, parse_submit_payload
+
+        decisions, errors = parse_submit_payload(payload, requirements)
+        if errors:
+            detail = "\n".join(f"• {e.field}: {e.message}" for e in errors)
+            client = AsyncWebClient(token=slack_tools.token, ssl=ssl)
+            await _post_ephemeral(client, channel=ctx.channel, user=ctx.user_id, text=f"Please fix the following and submit again:\n{detail}")
+            return None
+        apply_decisions(decisions, requirements)
+        return decisions
+
+    async def _emit_denied_decision_cards(stream: Any, decisions: List[Any], requirements: List[Any], run_id: str) -> None:
+        # Emits task cards for DENIED confirmations only (approved ones show via tool's call card)
+        from agno.os.interfaces.slack.types import tool_args, tool_name, truncate
+
+        requirements_by_id = {r.id: r for r in requirements if r.id}
+        for decision in decisions:
+            req = requirements_by_id.get(decision.requirement_id)
+            if req is None or decision.pause_type != "confirmation" or decision.approved is True:
+                continue
+            name = tool_name(req)
+            args_dict = tool_args(req)
+            arg_parts = [f"{k}={truncate(str(v), 40)}" for k, v in args_dict.items()]
+            args_str = ", ".join(arg_parts)
+            title = truncate(f"Denied: {name}({args_str})" if args_str else f"Denied: {name}", 120)
+            try:
+                await stream.append(markdown_text="", chunks=[{
+                    "type": "task_update",
+                    "id": f"approval:{decision.requirement_id}",
+                    "title": title,
+                    "status": "complete",
+                }])
+            except Exception as exc:
+                log_error(f"[HITL] decision_update append failed: run_id={run_id} slack_error={slack_error_code(exc)!r} | {exc}")
+
+    async def _stream_continuation(
+        ctx: SubmitContext,
+        stream: Any,
+        requirements: List[Any],
+    ) -> StreamState:
+        # Streams the continuation, returns final state with paused_event if re-paused
+        state = StreamState(entity_name=entity_name, entity_type=entity_type)
+        try:
+            # requirements= forwards user's confirmations into the resumed run
+            response_stream: Any = entity.acontinue_run(  # type: ignore[union-attr, call-arg, call-overload]
+                run_id=ctx.run_id,
+                requirements=requirements,
+                session_id=ctx.session_id,
+                stream=True,
+                stream_events=True,
+            )
+        except Exception as exc:
+            log_error(f"[HITL] acontinue_run (stream) failed for run={ctx.run_id}: {exc}")
+            return state
+
+        try:
+            async for chunk in response_stream:
+                state.collect_media(chunk)
+                ev = getattr(chunk, "event", None)
+                if ev and await process_event(ev, chunk, state, stream):
+                    break
+                if state.has_content():
+                    content = state.flush()
+                    if content and state.stream_chars_sent + len(content) <= _STREAM_CHAR_LIMIT:
+                        await stream.append(markdown_text=content)
+                        state.stream_chars_sent += len(content)
+        except Exception as exc:
+            log_error(f"[HITL] continuation append failed: run_id={ctx.run_id} slack_error={slack_error_code(exc)!r} | {exc}")
+        return state
+
+    async def _finalize_or_repause(
+        ctx: SubmitContext,
+        stream: Any,
+        state: StreamState,
+    ) -> None:
+        # Handles stream finalization — posts new pause card if re-paused, otherwise stops stream
+        from slack_sdk.web.async_client import AsyncWebClient
+
+        client = AsyncWebClient(token=slack_tools.token, ssl=ssl)
+
+        if state.paused_event is not None:
+            requirements = list(getattr(state.paused_event, "active_requirements", None) or [])
+            if requirements:
+                from agno.os.interfaces.slack.pause import finalize_pause, post_pause_card
+
+                new_awaiting_ts = await finalize_pause(
+                    client=client,
+                    stream=stream,
+                    state=state,
+                    run_id=ctx.run_id,
+                    channel=ctx.channel,
+                    thread_ts=ctx.thread_ts,
+                    requirements=requirements,
+                    log_prefix="re-",
+                )
+                try:
+                    await post_pause_card(client, state.paused_event, ctx.channel, ctx.thread_ts, new_awaiting_ts)
+                except Exception as exc:
+                    log_error(f"[HITL] Failed to post Card block (re-pause): {exc}")
+                return
+
+        # Normal completion — stop the stream
+        stop_kwargs: Dict[str, Any] = {}
+        if state.has_content():
+            stop_kwargs["markdown_text"] = state.flush()
+        if state.task_cards:
+            final_status: TaskStatus = state.terminal_status or "complete"
+            completion_chunks = state.resolve_all_pending(final_status)
+            if completion_chunks:
+                stop_kwargs["chunks"] = completion_chunks
+        try:
+            await stream.stop(**stop_kwargs)
+        except Exception as exc:
+            log_error(f"[HITL] stream.stop after resume failed: run_id={ctx.run_id} slack_error={slack_error_code(exc)!r} | {exc}")
+
     async def _handle_row_approve(payload: Dict[str, Any]) -> None:
         # Toggle row to approved, auto-submit if all confirmation rows decided
         ctx = _extract_row_action_context(payload)
@@ -433,234 +628,43 @@ def attach_routes(
         await _safe_chat_update(ctx.channel, ctx.card_ts, "Rejection pending", blocks, "row reject")
 
     async def _handle_submit(payload: Dict[str, Any]) -> None:
-        # Always opens a new stream rather than resuming the pre-pause ts. Slack
-        # enforces a ~5-min wall-clock timeout on chat_stream regardless of keep-
-        # alive pings, and human deliberation routinely exceeds that. A fresh
-        # bubble is the only reliable continuation path.
+        # Opens fresh stream — Slack's 5min timeout makes reusing pre-pause ts unreliable
         from slack_sdk.web.async_client import AsyncWebClient
 
-        from agno.os.interfaces.slack.interactions import apply_decisions, parse_submit_payload
-        from agno.os.interfaces.slack.types import tool_args, tool_name, truncate
-
-        actions = payload.get("actions") or []
-        if not actions:
+        ctx = _extract_submit_context(payload)
+        if ctx is None:
             return
-        submit_block_id = actions[0].get("block_id") or ""
-        if not submit_block_id.startswith("pause:"):
-            return
-        run_id = submit_block_id.removeprefix("pause:")
-        channel = (payload.get("channel") or {}).get("id")
-        message = payload.get("message") or {}
-        msg_ts = message.get("ts")
-        if not (run_id and channel and msg_ts):
-            return
-        log_info(f"[HITL] submit received: run_id={run_id} channel={channel}")
+        log_info(f"[HITL] submit received: run_id={ctx.run_id} channel={ctx.channel}")
 
-        thread_ts = message.get("thread_ts") or msg_ts
-        session_id = f"{entity_id}:{thread_ts}"
+        await _delete_awaiting_indicator(ctx.channel, ctx.awaiting_ts)
 
-        # Extract awaiting_ts from button value (stateless)
-        button_value = actions[0].get("value") or ""
-        _, awaiting_ts = decode_submit_button_value(button_value)
-
-        # Extract user/team from payload for streaming
-        recipient_user_id = (payload.get("user") or {}).get("id")
-        recipient_team_id = (payload.get("team") or {}).get("id")
-
-        client = AsyncWebClient(token=slack_tools.token, ssl=ssl)
-
-        # Delete the standalone "⏸ Awaiting …" indicator posted at pause time.
-        # Silently ignore message_not_found — retries hit this after first success.
-        if awaiting_ts:
-            try:
-                await client.chat_delete(channel=channel, ts=awaiting_ts)
-            except Exception as exc:
-                if "message_not_found" not in str(exc):
-                    log_error(f"[HITL] chat_delete (awaiting indicator) failed for ts={awaiting_ts}: {exc}")
-
-        try:
-            run_output = await entity.aget_run_output(run_id=run_id, session_id=session_id)  # type: ignore[union-attr]
-        except Exception as exc:
-            log_error(f"[HITL] aget_run_output failed for run={run_id}: {exc}")
-            run_output = None
-
-        requirements = list(getattr(run_output, "active_requirements", None) or []) if run_output else []
+        requirements = await _load_active_requirements(ctx)
         if not requirements:
-            await _post_ephemeral(
-                client,
-                channel=channel,
-                user=(payload.get("user") or {}).get("id", ""),
-                text="This approval is no longer active.",
-            )
+            client = AsyncWebClient(token=slack_tools.token, ssl=ssl)
+            await _post_ephemeral(client, channel=ctx.channel, user=ctx.user_id, text="This approval is no longer active.")
             return
 
-        decisions, errors = parse_submit_payload(payload, requirements)
-        if errors:
-            detail = "\n".join(f"• {e.field}: {e.message}" for e in errors)
-            await _post_ephemeral(
-                client,
-                channel=channel,
-                user=(payload.get("user") or {}).get("id", ""),
-                text=f"Please fix the following and submit again:\n{detail}",
-            )
+        decisions = await _validate_and_apply_decisions(ctx, payload, requirements)
+        if decisions is None:
             return
 
-        apply_decisions(decisions, requirements)
-
-        # Lock the form: convert interactive inputs/cards to readonly display
         original_blocks = list((payload.get("message") or {}).get("blocks") or [])
-        has_inputs = any(b.get("type") == "input" for b in original_blocks)
-        # Check for cards with actions (buttons) — matches what response_blocks strips
-        has_interactive_cards = any(b.get("type") == "card" and b.get("actions") for b in original_blocks)
-        if has_inputs or has_interactive_cards:
-            from agno.os.interfaces.slack.builders import response_blocks
+        await _lock_submitted_form(ctx, original_blocks, requirements)
 
-            state_values = (payload.get("state") or {}).get("values") or {}
-            readonly_blocks = response_blocks(original_blocks, state_values, requirements)
-            try:
-                await client.chat_update(
-                    channel=channel,
-                    ts=msg_ts,
-                    text="Submitted",
-                    blocks=readonly_blocks,
-                )
-            except Exception as exc:
-                log_error(f"[HITL] chat_update (submit readonly) failed for {msg_ts}: {exc}")
-
-        # Resume always opens a fresh continuation stream — we intentionally
-        # do not try to reuse the pre-pause ts. Slack enforces a ~5-min wall
-        # clock on chat_stream regardless of pings, and human deliberation
-        # routinely exceeds that. A new bubble is the predictable fallback.
-        # All context reconstructed from Slack payload + config closure.
+        # Open fresh continuation stream
+        client = AsyncWebClient(token=slack_tools.token, ssl=ssl)
         stream = await client.chat_stream(
-            channel=channel,
-            thread_ts=thread_ts,
-            recipient_team_id=recipient_team_id,
-            recipient_user_id=recipient_user_id,
+            channel=ctx.channel,
+            thread_ts=ctx.thread_ts,
+            recipient_team_id=ctx.team_id,
+            recipient_user_id=ctx.user_id,
             task_display_mode=task_display_mode,
             buffer_size=buffer_size,
         )
 
-        # Emit decision task cards for DENIED confirmations only
-        requirements_by_id = {r.id: r for r in requirements if r.id}
-        for decision in decisions:
-            req = requirements_by_id.get(decision.requirement_id)
-            if req is None:
-                continue
-            # Skip the decision task card entirely except for DENIED
-            # confirmations. Approved confirmations let the tool's own
-            # call card carry the story. For user_input / user_feedback /
-            # external_execution, the readonly Card in the thread above
-            # already shows the submission — repeating "Submitted: tool(...)"
-            # in the continuation's plan block is redundant noise.
-            if decision.pause_type != "confirmation":
-                continue
-            if decision.approved is True:
-                continue
-            # Build "Denied: tool_name(args)" title inline
-            name = tool_name(req)
-            args_dict = tool_args(req)
-            arg_parts = [f"{k}={truncate(str(v), 40)}" for k, v in args_dict.items()]
-            args_str = ", ".join(arg_parts)
-            title = truncate(f"Denied: {name}({args_str})" if args_str else f"Denied: {name}", 120)
-            decision_chunk = {
-                "type": "task_update",
-                "id": f"approval:{decision.requirement_id}",
-                "title": title,
-                "status": "complete",
-            }
-            try:
-                await stream.append(markdown_text="", chunks=[decision_chunk])
-            except Exception as exc:
-                log_error(
-                    f"[HITL] decision_update append failed: run_id={run_id} "
-                    f"slack_error={slack_error_code(exc)!r} | {exc}"
-                )
-
-        # Now stream the continuation. We reuse the same process_event
-        # pipeline that the initial run used so cards, reasoning, tool
-        # call events, and content all render identically.
-        state = StreamState(entity_name=entity_name, entity_type=entity_type)
-        try:
-            # requirements= is load-bearing: apply_decisions mutated our
-            # local list, but the agent's own stored state still sees them
-            # as pending. Passing the mutated list forwards the user's
-            # confirmations into the resumed run.
-            # Annotated Any because acontinue_run's overload resolution can't
-            # narrow through entity's Union and the tool-ignore comment on
-            # the call disables mypy's AsyncIterator vs Coroutine discrimination.
-            response_stream: Any = entity.acontinue_run(  # type: ignore[union-attr, call-arg, call-overload]
-                run_id=run_id,
-                requirements=requirements,
-                session_id=session_id,
-                stream=True,
-                stream_events=True,
-            )
-        except Exception as exc:
-            log_error(f"[HITL] acontinue_run (stream) failed for run={run_id}: {exc}")
-            await send_slack_message_async(client, channel=channel, message=_ERROR_MESSAGE, thread_ts=thread_ts)
-            return
-
-        paused_again: bool = False
-        try:
-            async for chunk in response_stream:
-                state.collect_media(chunk)
-                ev = getattr(chunk, "event", None)
-                if ev:
-                    if await process_event(ev, chunk, state, stream):
-                        break
-                if state.has_content():
-                    content = state.flush()
-                    if content and state.stream_chars_sent + len(content) <= _STREAM_CHAR_LIMIT:
-                        await stream.append(markdown_text=content)
-                        state.stream_chars_sent += len(content)
-        except Exception as exc:
-            log_error(
-                f"[HITL] continuation append failed: run_id={run_id} slack_error={slack_error_code(exc)!r} | {exc}"
-            )
-
-        # If the continuation paused again, finalize the pre-pause bubble
-        # and post the awaiting indicator + Card. This mirrors the main-run
-        # pause path — without stream.stop() here Slack keeps the bubble in
-        # a streaming state and the appended "_Reviewing…_" placeholder
-        # never lands as a rendered rich_text block.
-        if state.paused_event is not None:
-            requirements2 = list(getattr(state.paused_event, "active_requirements", None) or [])
-            if requirements2:
-                from agno.os.interfaces.slack.pause import finalize_pause, post_pause_card
-
-                new_awaiting_ts = await finalize_pause(
-                    client=client,
-                    stream=stream,
-                    state=state,
-                    run_id=run_id,
-                    channel=channel,
-                    thread_ts=thread_ts,
-                    requirements=requirements2,
-                    log_prefix="re-",
-                )
-                try:
-                    await post_pause_card(client, state.paused_event, channel, thread_ts, new_awaiting_ts)
-                except Exception as exc:
-                    log_error(f"[HITL] Failed to post Card block (re-pause): {exc}")
-                paused_again = True
-
-        if not paused_again:
-            stop_kwargs: Dict[str, Any] = {}
-            if state.has_content():
-                stop_kwargs["markdown_text"] = state.flush()
-            if state.task_cards:
-                final_status: TaskStatus = state.terminal_status or "complete"
-                completion_chunks = state.resolve_all_pending(final_status)
-                if completion_chunks:
-                    stop_kwargs["chunks"] = completion_chunks
-            try:
-                await stream.stop(**stop_kwargs)
-            except Exception as exc:
-                log_error(
-                    f"[HITL] stream.stop after resume failed: run_id={run_id} "
-                    f"slack_error={slack_error_code(exc)!r} | {exc}"
-                )
+        await _emit_denied_decision_cards(stream, decisions, requirements, ctx.run_id)
+        state = await _stream_continuation(ctx, stream, requirements)
+        await _finalize_or_repause(ctx, stream, state)
 
     async def _post_ephemeral(
         client: Any,
