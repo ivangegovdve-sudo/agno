@@ -80,7 +80,7 @@ def render_arg_value(value: Any) -> str:
         return str(value)
 
 
-# Slack lacks native boolean input; checkbox implies multi-select which is confusing
+# Dropdown for bool fields — Slack checkboxes are multi-select, so we use a single-select dropdown instead
 _BOOL_OPTIONS = [
     Option(text=PlainTextObject(text="True"), value="true"),
     Option(text=PlainTextObject(text="False"), value="false"),
