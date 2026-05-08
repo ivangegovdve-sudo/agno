@@ -108,7 +108,7 @@ def _build_input_field(req_id: str, ui_field: Any) -> InputBlock:
             options=options,
         )
 
-    # Dropdown for bool fields — Slack checkboxes are multi-select, so we use a single-select dropdown instead
+    # Bool renders as dropdown (True/False)
     elif type_name == "bool":
         element = StaticSelectElement(
             action_id=f"{ACTION_INPUT_FIELD_PREFIX}{name}",
