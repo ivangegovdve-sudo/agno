@@ -406,18 +406,19 @@ class SlackEventHandler:
             await self.send_error(ctx)
 
     async def handle_thread_started(self, event: dict) -> None:
-        if not self.suggested_prompts:
-            return
-
         thread_info = event.get("assistant_thread", {})
         channel_id = thread_info.get("channel_id", "")
         thread_ts = thread_info.get("thread_ts", "")
         if not (channel_id and thread_ts):
             return
 
+        prompts = self.suggested_prompts or [
+            {"title": "Help", "message": "What can you help me with?"},
+            {"title": "Search", "message": "Search the web for..."},
+        ]
         try:
             await self._client().assistant_threads_setSuggestedPrompts(
-                channel_id=channel_id, thread_ts=thread_ts, prompts=self.suggested_prompts
+                channel_id=channel_id, thread_ts=thread_ts, prompts=prompts
             )
-        except Exception:
-            pass
+        except Exception as e:
+            log_error(f"Failed to set suggested prompts: {str(e)}")

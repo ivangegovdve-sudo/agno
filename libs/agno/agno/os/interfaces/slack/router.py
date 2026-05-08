@@ -30,14 +30,6 @@ _IGNORED_SUBTYPES = frozenset(
     }
 )
 
-# User-facing error message for failed requests
-_ERROR_MESSAGE = "Sorry, there was an error processing your message."
-
-# Slack caps streamed messages at ~40K total payload (text + task card blocks)
-_STREAM_CHAR_LIMIT = 39000
-_STREAM_CARD_LIMIT = 45
-
-
 class SlackEventResponse(BaseModel):
     status: str = Field(default="ok")
 
