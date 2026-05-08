@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional
 
 from agno.os.interfaces.slack.ids import (
     ACTION_EXTERNAL_RESULT,
@@ -14,6 +14,8 @@ from agno.os.interfaces.slack.ids import (
 from agno.os.interfaces.slack.types import (
     ParsedDecision,
     ParseError,
+    SlackBlocks,
+    SlackState,
     _tool_args,
     _tool_name,
     _truncate,
@@ -24,37 +26,6 @@ from agno.run.requirement import RunRequirement
 DECISION_TITLE_MAX = 120
 # Slack Card body renders poorly with long values; keeps single-line args readable
 DECISION_VALUE_MAX = 40
-
-SlackState = Dict[str, Dict[str, Any]]
-SlackBlocks = List[Dict[str, Any]]
-
-
-def _coerce_json(raw: str, expected: Type) -> Any:
-    parsed = json.loads(raw)
-    if not isinstance(parsed, expected):
-        raise ValueError(f"expected {expected.__name__}, got {type(parsed).__name__}")
-    return parsed
-
-
-# Slack input fields always return strings; coerce back to schema-declared types
-_COERCERS: Dict[Type, Callable[[str], Any]] = {
-    str: lambda v: v,
-    int: int,
-    float: float,
-    # Slack has no native boolean input; users type "true"/"1"/"yes" in plain_text_input
-    bool: lambda v: v.lower() in ("true", "1", "yes"),
-    list: lambda v: _coerce_json(v, list),
-    dict: lambda v: _coerce_json(v, dict),
-}
-
-
-def coerce_to_type(raw: Optional[str], target_type: Type) -> Any:
-    if not raw:
-        return None
-    coercer = _COERCERS.get(target_type)
-    if coercer is None:
-        return raw
-    return coercer(raw)
 
 
 def _get_action_state(state: SlackState, block_id: str, action_id: str) -> Dict[str, Any]:
@@ -69,41 +40,29 @@ def _parse_confirmation(
 ) -> ParsedDecision:
     req_id = requirement.id or ""
     state = state or {}
-    # Confirmation state lives in block_id, not view state — button clicks update the block itself
     decision = None
-    rejected_note: Optional[str] = None
 
+    # Decision is encoded in block_id when user clicks Approve/Deny toggle
     for block in blocks:
         parsed = parse_row_block_id(block.get("block_id", ""))
         if parsed and parsed.get("req_id") == req_id and parsed.get("kind") == "confirmation":
             if parsed.get("status") == "decided":
                 decision = parsed.get("decided")
+                break
 
-        # Extract rejection note from embedded context block (legacy format)
-        block_id = block.get("block_id", "")
-        if block_id == f"reject_note:{req_id}":
-            elements = block.get("elements") or []
-            if elements:
-                note_text = elements[0].get("text", "").strip()
-                if note_text:
-                    rejected_note = note_text
+    if decision is None:
+        tool_name = _tool_name(requirement)
+        errors.append(ParseError(requirement_id=req_id, field=tool_name, message="Approval decision required"))
+        return ParsedDecision(requirement_id=req_id, pause_type="confirmation", approved=None)
 
-    # Also check for rejection reason from InputBlock state (toggle format)
-    if rejected_note is None:
+    # Extract optional rejection reason from InputBlock state
+    rejected_note = None
+    if decision == "deny":
         reason_state = _get_action_state(state, f"reject_reason:{req_id}", ACTION_REJECT_REASON)
         reason_text = (reason_state.get("value") or "").strip()
         if reason_text:
             rejected_note = reason_text
 
-    if decision is None:
-        # Undecided confirmation is a validation error, not an implicit rejection
-        tool_name = _tool_name(requirement)
-        errors.append(ParseError(requirement_id=req_id, field=tool_name, message="Approval decision required"))
-        return ParsedDecision(
-            requirement_id=req_id,
-            pause_type="confirmation",
-            approved=None,
-        )
     return ParsedDecision(
         requirement_id=req_id,
         pause_type="confirmation",
@@ -127,18 +86,13 @@ def _parse_user_input(
         action_state = _get_action_state(state, block_id, action_id)
         # Slack nests static_select values under selected_option; text inputs use value directly
         if action_state.get("type") == "static_select":
-            raw_value = (action_state.get("selected_option") or {}).get("value")
+            value = (action_state.get("selected_option") or {}).get("value")
         else:
-            raw_value = action_state.get("value")
+            value = action_state.get("value")
 
-        try:
-            values[field.name] = coerce_to_type(raw_value, field.field_type)
-            # All user_input fields are required — None means empty submission
-            if values[field.name] is None:
-                errors.append(ParseError(requirement_id=req_id, field=field.name, message="This field is required"))
-        except (ValueError, TypeError) as exc:
-            errors.append(ParseError(requirement_id=req_id, field=field.name, message=str(exc)))
-            values[field.name] = None
+        values[field.name] = value
+        if value is None:
+            errors.append(ParseError(requirement_id=req_id, field=field.name, message="This field is required"))
 
     return ParsedDecision(
         requirement_id=req_id,

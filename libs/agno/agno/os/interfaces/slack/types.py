@@ -5,6 +5,10 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agno.run.requirement import PauseType
 
+# Type aliases for Slack payload structures
+SlackState = Dict[str, Dict[str, Any]]  # view.state.values from form submissions
+SlackBlocks = List[Dict[str, Any]]  # Message block array
+
 if TYPE_CHECKING:
     from agno.run.requirement import RunRequirement
 
