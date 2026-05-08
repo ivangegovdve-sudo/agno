@@ -88,7 +88,8 @@ def _build_text_input(name: str, field_type: Any, initial_raw: Any) -> PlainText
     )
 
 
-def _element_for_type(name: str, field_type: Any, initial_raw: Any) -> Any:
+# Maps Python type → Slack input element: dropdown for finite choices (Literal/Enum/bool), text box otherwise
+def _field_type_to_input_element(name: str, field_type: Any, initial_raw: Any) -> Any:
     # Literal["a", "b"] → dropdown
     if _is_literal(field_type):
         args = get_args(field_type)
@@ -116,7 +117,7 @@ def _build_input_field(req_id: str, ui_field: Any) -> InputBlock:
     field_type = getattr(ui_field, "field_type", str)
     initial_raw = getattr(ui_field, "value", None)
 
-    element = _element_for_type(name, field_type, initial_raw)
+    element = _field_type_to_input_element(name, field_type, initial_raw)
 
     return InputBlock(
         block_id=f"{row_block_id(req_id, 'user_input')}:{name}",
