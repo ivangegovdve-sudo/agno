@@ -13,7 +13,7 @@ from agno.os.interfaces.slack.builders import (
     select_confirmation_row,
 )
 from agno.os.interfaces.slack.events import process_event
-from agno.os.interfaces.slack.helpers import slack_error_code
+from agno.os.interfaces.slack.helpers import open_chat_stream, slack_error_code
 from agno.os.interfaces.slack.interactions import (
     apply_decisions,
     extract_row_action_context,
@@ -256,13 +256,9 @@ class HITLHandler:
         original_blocks = list((payload.get("message") or {}).get("blocks") or [])
         await self.freeze_form(ctx, original_blocks, requirements)
 
-        stream = await self._client().chat_stream(
-            channel=ctx.channel,
-            thread_ts=ctx.thread_ts,
-            recipient_team_id=ctx.team_id,
-            recipient_user_id=ctx.user_id,
-            task_display_mode=self.task_display_mode,
-            buffer_size=self.buffer_size,
+        stream = await open_chat_stream(
+            self._client(), ctx.channel, ctx.thread_ts, ctx.user_id, ctx.team_id,
+            self.task_display_mode, self.buffer_size,
         )
 
         await self.post_denial_cards(stream, decisions, requirements, ctx.run_id)

@@ -245,6 +245,25 @@ async def upload_response_media_async(async_client: Any, response: Any, channel_
                     log_error(f"Failed to upload {attr.rstrip('s')}: {str(e)}")
 
 
+async def open_chat_stream(
+    client: Any,
+    channel: str,
+    thread_ts: str,
+    recipient_user_id: str,
+    recipient_team_id: Optional[str],
+    task_display_mode: str,
+    buffer_size: int,
+) -> Any:
+    return await client.chat_stream(
+        channel=channel,
+        thread_ts=thread_ts,
+        recipient_team_id=recipient_team_id,
+        recipient_user_id=recipient_user_id,
+        task_display_mode=task_display_mode,
+        buffer_size=buffer_size,
+    )
+
+
 async def send_slack_message_async(
     async_client: Any, channel: str, thread_ts: str, message: str, italics: bool = False
 ) -> None:

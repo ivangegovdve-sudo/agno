@@ -13,6 +13,7 @@ from agno.os.interfaces.slack.helpers import (
     build_run_metadata,
     download_event_files_async,
     extract_event_context,
+    open_chat_stream,
     resolve_channel_name,
     resolve_slack_user,
     send_slack_message_async,
@@ -247,13 +248,9 @@ class SlackEventHandler:
         return True
 
     async def _open_chat_stream(self, client: AsyncWebClient, ctx: EventContext) -> Any:
-        return await client.chat_stream(
-            channel=ctx.channel_id,
-            thread_ts=ctx.thread_id,
-            recipient_team_id=ctx.team_id,
-            recipient_user_id=ctx.user,
-            task_display_mode=self.task_display_mode,
-            buffer_size=self.buffer_size,
+        return await open_chat_stream(
+            client, ctx.channel_id, ctx.thread_id, ctx.user, ctx.team_id,
+            self.task_display_mode, self.buffer_size,
         )
 
     async def _set_thread_title(self, client: AsyncWebClient, ctx: EventContext, state: StreamState) -> None:
