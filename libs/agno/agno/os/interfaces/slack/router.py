@@ -25,7 +25,13 @@ from agno.os.interfaces.slack.helpers import (
 from agno.os.interfaces.slack.security import verify_slack_signature
 from agno.os.interfaces.slack.state import StreamState, TaskStatus
 from agno.os.interfaces.slack.ids import decode_row_button_value, decode_submit_button_value
-from agno.os.interfaces.slack.types import block_to_dict
+from agno.os.interfaces.slack.types import (
+    ConfirmationRowSummary,
+    RowActionContext,
+    RowTransformResult,
+    SubmitContext,
+    block_to_dict,
+)
 from agno.team import RemoteTeam, Team
 from agno.tools.slack import SlackTools
 from agno.utils.log import log_error, log_info
@@ -217,231 +223,214 @@ def attach_routes(
 
         return SlackEventResponse(status="ok")
 
-    async def _handle_row_approve(payload: Dict[str, Any]) -> None:
-        # Toggle confirmation row to "approved" state, preserve all other rows.
-        # If there's a global Submit button, don't auto-submit — user clicks Submit.
-        # If there's NO global Submit (only confirmation rows), auto-submit when all decided.
-        from slack_sdk.web.async_client import AsyncWebClient
+    # --- Interaction helper functions ---
 
-        from agno.os.interfaces.slack.builders import build_confirmation_toggle_card
-        from agno.os.interfaces.slack.ids import encode_submit_button_value
-
+    def _extract_row_action_context(payload: Dict[str, Any]) -> Optional[RowActionContext]:
+        # Extracts and validates context from row button click payloads
         actions = payload.get("actions") or []
         if not actions:
-            return
+            return None
         button_value = actions[0].get("value") or ""
         if "|" not in button_value:
-            return
+            return None
         req_id, run_id, awaiting_ts = decode_row_button_value(button_value)
 
         channel = (payload.get("channel") or {}).get("id")
         message = payload.get("message") or {}
         card_ts = message.get("ts")
         if not channel or not card_ts:
-            return
+            return None
 
-        original_blocks = list(message.get("blocks") or [])
+        return RowActionContext(
+            req_id=req_id,
+            run_id=run_id,
+            awaiting_ts=awaiting_ts,
+            channel=channel,
+            card_ts=card_ts,
+            blocks=list(message.get("blocks") or []),
+        )
 
-        # Build updated blocks: toggle clicked row to "approved", preserve others
-        updated_blocks: List[Dict[str, Any]] = []
-        pending_confirmation_rows: set[str] = set()
+    def _confirmation_row_summary(blocks: List[Dict[str, Any]]) -> ConfirmationRowSummary:
+        # Scans blocks to find pending confirmation rows and global submit button
+        pending_ids: set[str] = set()
         has_global_submit = False
-
-        for block in original_blocks:
+        for block in blocks:
             block_id = block.get("block_id", "")
             block_type = block.get("type", "")
-
-            # Match clicked row by block_id prefix (handles both fresh and toggled states)
-            if block_id.startswith(f"rowact:{req_id}:confirmation"):
-                # Extract tool_name and body from current card
-                name = (block.get("title") or {}).get("text", "*tool*").replace("*", "")
-                body_text = (block.get("body") or {}).get("text", "")
-                # Build toggle card with "approve" selected
-                toggle_card = build_confirmation_toggle_card(
-                    req_id=req_id,
-                    run_id=run_id,
-                    awaiting_ts=awaiting_ts,
-                    tool_name=name,
-                    body_text=body_text,
-                    selected="approve",
-                )
-                updated_blocks.append(block_to_dict(toggle_card))
-                # Add decision marker for parse_submit_payload
-                updated_blocks.append(
-                    {
-                        "type": "section",
-                        "block_id": f"row:{req_id}:confirmation:decided:approve",
-                        "text": {"type": "plain_text", "text": " "},
-                    }
-                )
-            # Skip existing decision markers for this row (will be replaced above)
-            elif block_id.startswith(f"row:{req_id}:confirmation:decided:"):
-                continue
-            # Skip any existing rejection reason input for this row (user toggled from Deny to Approve)
-            elif block_id == f"reject_reason:{req_id}":
-                continue
-            # Global Submit button
-            elif block_type == "actions" and block_id.startswith("pause:"):
-                updated_blocks.append(block)
+            # Global submit button lives in an actions block with pause: prefix
+            if block_type == "actions" and block_id.startswith("pause:"):
                 has_global_submit = True
-            # Another confirmation row (not this one)
-            elif block_id.startswith("rowact:") and "confirmation" in block_id:
-                updated_blocks.append(block)
-                parts = block_id.split(":")
-                # Track as pending unless already decided (selected or confirmed rejection)
-                if len(parts) >= 2 and ":selected:" not in block_id and ":decided:" not in block_id:
-                    pending_confirmation_rows.add(parts[1])
-            # All other blocks: preserve
-            else:
-                updated_blocks.append(block)
-
-        client = AsyncWebClient(token=slack_tools.token, ssl=ssl)
-        try:
-            await client.chat_update(channel=channel, ts=card_ts, text="Approval pending", blocks=updated_blocks)
-        except Exception as exc:
-            log_error(f"[HITL] chat_update (row approve) failed for card {card_ts}: {exc}")
-
-        if not run_id:
-            return
-
-        # Auto-submit only when: all confirmation rows decided AND no global Submit button
-        if not pending_confirmation_rows and not has_global_submit:
-            synthetic_payload = dict(payload)
-            synthetic_payload["actions"] = [
-                {
-                    "action_id": "submit_pause",
-                    "block_id": f"pause:{run_id}",
-                    "value": encode_submit_button_value(run_id, awaiting_ts),
-                }
-            ]
-            synthetic_payload["message"] = {
-                **(payload.get("message") or {}),
-                "blocks": updated_blocks,
-            }
-            await _handle_submit(synthetic_payload)
-
-    async def _handle_row_reject_start(payload: Dict[str, Any]) -> None:
-        # Toggle confirmation row to "denied" state + add reason input, preserve all other rows
-        from slack_sdk.models.blocks import InputBlock
-        from slack_sdk.models.blocks import PlainTextInputElement as PlainTextInput
-        from slack_sdk.models.blocks.basic_components import PlainTextObject as PlainText
-        from slack_sdk.web.async_client import AsyncWebClient
-
-        from agno.os.interfaces.slack.builders import build_confirmation_toggle_card
-        from agno.os.interfaces.slack.ids import ACTION_REJECT_REASON
-
-        actions = payload.get("actions") or []
-        if not actions:
-            return
-        button_value = actions[0].get("value") or ""
-        if "|" not in button_value:
-            return
-        req_id, run_id, awaiting_ts = decode_row_button_value(button_value)
-
-        channel = (payload.get("channel") or {}).get("id")
-        message = payload.get("message") or {}
-        card_ts = message.get("ts")
-        if not channel or not card_ts:
-            return
-
-        original_blocks = list(message.get("blocks") or [])
-
-        # Build updated blocks: toggle clicked row to "deny" + add reason input
-        updated_blocks: List[Dict[str, Any]] = []
-
-        for block in original_blocks:
-            block_id = block.get("block_id", "")
-
-            # Match clicked row by block_id prefix (handles both fresh and toggled states)
-            if block_id.startswith(f"rowact:{req_id}:confirmation"):
-                name = (block.get("title") or {}).get("text", "*tool*").replace("*", "")
-                body_text = (block.get("body") or {}).get("text", "")
-                # Build toggle card with "deny" selected
-                toggle_card = build_confirmation_toggle_card(
-                    req_id=req_id,
-                    run_id=run_id,
-                    awaiting_ts=awaiting_ts,
-                    tool_name=name,
-                    body_text=body_text,
-                    selected="deny",
-                )
-                updated_blocks.append(block_to_dict(toggle_card))
-                # Add inline reason input right after the card
-                reason_input = InputBlock(
-                    block_id=f"reject_reason:{req_id}",
-                    label=PlainText(text="Reason (optional)"),
-                    element=PlainTextInput(
-                        action_id=ACTION_REJECT_REASON,
-                        placeholder=PlainText(text="Why are you rejecting this action?"),
-                        multiline=True,
-                    ),
-                    optional=True,
-                )
-                updated_blocks.append(block_to_dict(reason_input))
-                # Add decision marker for parse_submit_payload
-                updated_blocks.append(
-                    {
-                        "type": "section",
-                        "block_id": f"row:{req_id}:confirmation:decided:deny",
-                        "text": {"type": "plain_text", "text": " "},
-                    }
-                )
-            # Skip existing decision markers for this row (will be replaced above)
-            elif block_id.startswith(f"row:{req_id}:confirmation:decided:"):
-                continue
-            # Skip existing rejection reason input for this row (will be re-added above)
-            elif block_id == f"reject_reason:{req_id}":
-                continue
-            # Preserve all other blocks
-            else:
-                updated_blocks.append(block)
-
-        # Check if we need to add a Submit button for confirmation-only cards
-        # (cards with no global Submit button and all rows now decided)
-        has_global_submit = any(
-            (b.get("type") == "actions" and b.get("block_id", "").startswith("pause:")) for b in updated_blocks
-        )
-        pending_confirmation_rows: set[str] = set()
-        for block in updated_blocks:
-            block_id = block.get("block_id", "")
             # Fresh confirmation row not yet decided
-            if block_id.startswith("rowact:") and ":confirmation" in block_id and ":decided:" not in block_id:
-                parts = block_id.split(":")
-                if len(parts) >= 2:
-                    pending_confirmation_rows.add(parts[1])
+            if block_id.startswith("rowact:") and ":confirmation" in block_id:
+                if ":selected:" not in block_id and ":decided:" not in block_id:
+                    parts = block_id.split(":")
+                    if len(parts) >= 2:
+                        pending_ids.add(parts[1])
             # Decision marker removes from pending
             if block_id.startswith("row:") and ":confirmation:decided:" in block_id:
                 parts = block_id.split(":")
                 if len(parts) >= 2:
-                    pending_confirmation_rows.discard(parts[1])
+                    pending_ids.discard(parts[1])
+        return ConfirmationRowSummary(pending_ids=pending_ids, has_global_submit=has_global_submit)
 
-        # Add Submit button if all rows decided and no global submit exists
-        if not pending_confirmation_rows and not has_global_submit and run_id:
-            from slack_sdk.models.blocks import ActionsBlock
-            from slack_sdk.models.blocks.basic_components import PlainTextObject
-            from slack_sdk.models.blocks.block_elements import ButtonElement
+    def _decision_marker(req_id: str, decision: Literal["approve", "deny"]) -> Dict[str, Any]:
+        # Creates hidden section block that parse_submit_payload reads to know row decision
+        return {
+            "type": "section",
+            "block_id": f"row:{req_id}:confirmation:decided:{decision}",
+            "text": {"type": "plain_text", "text": " "},
+        }
 
-            from agno.os.interfaces.slack.ids import encode_submit_button_value
+    def _select_confirmation_row(
+        ctx: RowActionContext,
+        selected: Literal["approve", "deny"],
+        include_reason_input: bool = False,
+    ) -> RowTransformResult:
+        # Transforms blocks: toggle clicked row to selected state, skip stale markers
+        from slack_sdk.models.blocks import InputBlock
+        from slack_sdk.models.blocks import PlainTextInputElement as PlainTextInput
+        from slack_sdk.models.blocks.basic_components import PlainTextObject as PlainText
 
-            submit_btn = ButtonElement(
-                action_id="submit_pause",
-                text=PlainTextObject(text="Submit", emoji=True),
-                style="primary",
-                value=encode_submit_button_value(run_id, awaiting_ts),
-            )
-            submit_block = ActionsBlock(block_id=f"pause:{run_id}", elements=[submit_btn])
-            updated_blocks.append(submit_block.to_dict())
+        from agno.os.interfaces.slack.builders import build_confirmation_toggle_card
+        from agno.os.interfaces.slack.ids import ACTION_REJECT_REASON
+
+        updated: List[Dict[str, Any]] = []
+        for block in ctx.blocks:
+            block_id = block.get("block_id", "")
+            block_type = block.get("type", "")
+
+            # Clicked row — replace with toggle card
+            if block_id.startswith(f"rowact:{ctx.req_id}:confirmation"):
+                name = (block.get("title") or {}).get("text", "*tool*").replace("*", "")
+                body_text = (block.get("body") or {}).get("text", "")
+                toggle_card = build_confirmation_toggle_card(
+                    req_id=ctx.req_id,
+                    run_id=ctx.run_id,
+                    awaiting_ts=ctx.awaiting_ts,
+                    tool_name=name,
+                    body_text=body_text,
+                    selected=selected,
+                )
+                updated.append(block_to_dict(toggle_card))
+                # Deny keeps card interactive so user can add optional reason before Submit
+                if include_reason_input:
+                    reason_input = InputBlock(
+                        block_id=f"reject_reason:{ctx.req_id}",
+                        label=PlainText(text="Reason (optional)"),
+                        element=PlainTextInput(
+                            action_id=ACTION_REJECT_REASON,
+                            placeholder=PlainText(text="Why are you rejecting this action?"),
+                            multiline=True,
+                        ),
+                        optional=True,
+                    )
+                    updated.append(block_to_dict(reason_input))
+                updated.append(_decision_marker(ctx.req_id, selected))
+                continue
+
+            # Skip stale decision markers and reason inputs for this row
+            if block_id.startswith(f"row:{ctx.req_id}:confirmation:decided:"):
+                continue
+            if block_id == f"reject_reason:{ctx.req_id}":
+                continue
+
+            # Preserve all other blocks
+            updated.append(block)
+
+        summary = _confirmation_row_summary(updated)
+        # Auto-submit only for confirmation-only cards when all rows decided
+        should_auto_submit = bool(ctx.run_id and not summary.pending_ids and not summary.has_global_submit)
+        return RowTransformResult(blocks=updated, should_auto_submit=should_auto_submit)
+
+    async def _safe_chat_update(
+        channel: str,
+        ts: str,
+        text: str,
+        blocks: List[Dict[str, Any]],
+        log_context: str,
+    ) -> bool:
+        # Wraps chat_update with consistent error handling
+        from slack_sdk.web.async_client import AsyncWebClient
 
         client = AsyncWebClient(token=slack_tools.token, ssl=ssl)
         try:
-            await client.chat_update(
-                channel=channel,
-                ts=card_ts,
-                text="Rejection pending",
-                blocks=updated_blocks,
-            )
+            await client.chat_update(channel=channel, ts=ts, text=text, blocks=blocks)
+            return True
         except Exception as exc:
-            log_error(f"[HITL] chat_update (row reject) failed for card {card_ts}: {exc}")
+            log_error(f"[HITL] chat_update ({log_context}) failed for {ts}: {exc}")
+            return False
+
+    def _synthetic_submit_payload(
+        payload: Dict[str, Any],
+        run_id: str,
+        awaiting_ts: Optional[str],
+        blocks: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        # Builds synthetic submit payload for auto-submit after all rows decided
+        from agno.os.interfaces.slack.ids import encode_submit_button_value
+
+        synthetic = dict(payload)
+        synthetic["actions"] = [
+            {
+                "action_id": "submit_pause",
+                "block_id": f"pause:{run_id}",
+                "value": encode_submit_button_value(run_id, awaiting_ts),
+            }
+        ]
+        synthetic["message"] = {**(payload.get("message") or {}), "blocks": blocks}
+        return synthetic
+
+    def _build_submit_button(run_id: str, awaiting_ts: Optional[str]) -> Dict[str, Any]:
+        # Creates Submit actions block for confirmation-only cards
+        from slack_sdk.models.blocks import ActionsBlock
+        from slack_sdk.models.blocks.basic_components import PlainTextObject
+        from slack_sdk.models.blocks.block_elements import ButtonElement
+
+        from agno.os.interfaces.slack.ids import encode_submit_button_value
+
+        submit_btn = ButtonElement(
+            action_id="submit_pause",
+            text=PlainTextObject(text="Submit", emoji=True),
+            style="primary",
+            value=encode_submit_button_value(run_id, awaiting_ts),
+        )
+        return ActionsBlock(block_id=f"pause:{run_id}", elements=[submit_btn]).to_dict()
+
+    def _append_submit_if_needed(
+        blocks: List[Dict[str, Any]],
+        run_id: str,
+        awaiting_ts: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        # Adds Submit button to confirmation-only cards when all rows decided
+        if not run_id:
+            return blocks
+        summary = _confirmation_row_summary(blocks)
+        if summary.pending_ids or summary.has_global_submit:
+            return blocks
+        return blocks + [_build_submit_button(run_id, awaiting_ts)]
+
+    async def _handle_row_approve(payload: Dict[str, Any]) -> None:
+        # Toggle row to approved, auto-submit if all confirmation rows decided
+        ctx = _extract_row_action_context(payload)
+        if ctx is None:
+            return
+
+        result = _select_confirmation_row(ctx, selected="approve", include_reason_input=False)
+        await _safe_chat_update(ctx.channel, ctx.card_ts, "Approval pending", result.blocks, "row approve")
+
+        if result.should_auto_submit:
+            await _handle_submit(_synthetic_submit_payload(payload, ctx.run_id, ctx.awaiting_ts, result.blocks))
+
+    async def _handle_row_reject_start(payload: Dict[str, Any]) -> None:
+        # Toggle row to denied + add reason input, append Submit if all rows decided
+        ctx = _extract_row_action_context(payload)
+        if ctx is None:
+            return
+
+        result = _select_confirmation_row(ctx, selected="deny", include_reason_input=True)
+        # Deny stays interactive so user can add optional reason before Submit
+        blocks = _append_submit_if_needed(result.blocks, ctx.run_id, ctx.awaiting_ts)
+        await _safe_chat_update(ctx.channel, ctx.card_ts, "Rejection pending", blocks, "row reject")
 
     async def _handle_submit(payload: Dict[str, Any]) -> None:
         # Always opens a new stream rather than resuming the pre-pause ts. Slack

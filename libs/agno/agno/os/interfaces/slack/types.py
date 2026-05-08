@@ -24,6 +24,49 @@ def block_to_dict(block: Any) -> Dict[str, Any]:
     return block if isinstance(block, dict) else {}
 
 
+# --- Context dataclasses for interaction handlers ---
+
+
+@dataclass
+class RowActionContext:
+    # Decoded from button value
+    req_id: str
+    run_id: str
+    awaiting_ts: Optional[str]
+    # Extracted from payload
+    channel: str
+    card_ts: str
+    blocks: List[Dict[str, Any]]
+
+
+@dataclass
+class SubmitContext:
+    run_id: str
+    channel: str
+    msg_ts: str
+    thread_ts: str
+    session_id: str
+    awaiting_ts: Optional[str]
+    user_id: str
+    team_id: Optional[str]
+    state_values: SlackState
+
+
+@dataclass
+class RowTransformResult:
+    blocks: List[Dict[str, Any]]
+    should_auto_submit: bool
+
+
+@dataclass
+class ConfirmationRowSummary:
+    pending_ids: set
+    has_global_submit: bool
+
+
+# --- Decision parsing dataclasses ---
+
+
 @dataclass
 class ParsedDecision:
     requirement_id: str
