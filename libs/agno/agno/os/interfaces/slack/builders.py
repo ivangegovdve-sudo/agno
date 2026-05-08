@@ -80,13 +80,6 @@ def render_arg_value(value: Any) -> str:
         return str(value)
 
 
-# Dropdown for bool fields — Slack checkboxes are multi-select, so we use a single-select dropdown instead
-_BOOL_OPTIONS = [
-    Option(text=PlainTextObject(text="True"), value="true"),
-    Option(text=PlainTextObject(text="False"), value="false"),
-]
-
-
 def _build_input_field(req_id: str, ui_field: Any) -> InputBlock:
     name = getattr(ui_field, "name", "field")
     description = getattr(ui_field, "description", None)
@@ -115,11 +108,15 @@ def _build_input_field(req_id: str, ui_field: Any) -> InputBlock:
             options=options,
         )
 
+    # Dropdown for bool fields — Slack checkboxes are multi-select, so we use a single-select dropdown instead
     elif type_name == "bool":
         element = StaticSelectElement(
             action_id=f"{ACTION_INPUT_FIELD_PREFIX}{name}",
             placeholder=PlainTextObject(text="Select"),
-            options=_BOOL_OPTIONS,
+            options=[
+                Option(text=PlainTextObject(text="True"), value="true"),
+                Option(text=PlainTextObject(text="False"), value="false"),
+            ],
         )
 
     if element is None:
