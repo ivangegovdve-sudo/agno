@@ -137,25 +137,28 @@ def _user_feedback_option_to_slack_option(option: Any, index: int) -> Option:
     )
 
 
-def _build_feedback_question(req_id: str, question: Any, q_index: int) -> InputBlock:
+# Checkboxes if multi_select, dropdown otherwise
+def _feedback_question_to_input_element(slack_options: List[Option], multi_select: bool, q_index: int) -> Any:
+    if multi_select:
+        return CheckboxesElement(
+            action_id=f"{ACTION_FEEDBACK_SELECT}:{q_index}",
+            options=slack_options,
+        )
+    return StaticSelectElement(
+        action_id=f"{ACTION_FEEDBACK_SELECT}:{q_index}",
+        placeholder=PlainTextObject(text="Select one"),
+        options=slack_options,
+    )
+
+
+# Builds Slack InputBlock for a HITL user_feedback question
+def _build_user_feedback_question_block(req_id: str, question: Any, q_index: int) -> InputBlock:
     prompt = getattr(question, "question", f"Question {q_index + 1}")
     options = getattr(question, "options", None) or []
     multi_select = bool(getattr(question, "multi_select", False))
 
     slack_options = [_user_feedback_option_to_slack_option(opt, i) for i, opt in enumerate(options)]
-
-    element: Any
-    if multi_select:
-        element = CheckboxesElement(
-            action_id=f"{ACTION_FEEDBACK_SELECT}:{q_index}",
-            options=slack_options,
-        )
-    else:
-        element = StaticSelectElement(
-            action_id=f"{ACTION_FEEDBACK_SELECT}:{q_index}",
-            placeholder=PlainTextObject(text="Select one"),
-            options=slack_options,
-        )
+    element = _feedback_question_to_input_element(slack_options, multi_select, q_index)
 
     return InputBlock(
         block_id=f"{row_block_id(req_id, 'user_feedback')}:q{q_index}",
@@ -341,7 +344,7 @@ def _build_feedback_row(requirement: RunRequirement) -> List[Any]:
     blocks: List[Any] = []
     schema = requirement.user_feedback_schema or []
     for i, question in enumerate(schema):
-        blocks.append(_build_feedback_question(req_id, question, i))
+        blocks.append(_build_user_feedback_question_block(req_id, question, i))
     return blocks
 
 
