@@ -230,8 +230,9 @@ async def _on_tool_call_error(chunk: BaseRunOutputEvent, state: StreamState, str
 
 
 async def _on_run_content(chunk: BaseRunOutputEvent, state: StreamState, stream: AsyncChatStream) -> bool:
-    # Suppress member agent content in team mode to avoid duplication — leader
-    # emits TeamRunContent which aggregates all member outputs into one response
+    # In team mode, member agents stream their own RunContentEvent (which extends
+    # BaseAgentRunEvent) before the leader synthesizes a TeamRunContent (which
+    # extends BaseTeamRunEvent). Showing both would duplicate content.
     if state.entity_type == "team" and isinstance(chunk, BaseAgentRunEvent):
         return False
     content = getattr(chunk, "content", None)
@@ -241,8 +242,9 @@ async def _on_run_content(chunk: BaseRunOutputEvent, state: StreamState, stream:
 
 
 async def _on_run_intermediate_content(chunk: BaseRunOutputEvent, state: StreamState, stream: AsyncChatStream) -> bool:
-    # Team intermediate content arrives per-member as they finish — showing it
-    # would interleave partial outputs. Only agents show intermediate content.
+    # Teams emit intermediate content from each member as they finish. Showing
+    # these would interleave partial outputs in the stream. The team leader
+    # emits a single consolidated RunContent at the end — that's what we show.
     if state.entity_type != "team":
         content = getattr(chunk, "content", None)
         if content is not None:
@@ -275,32 +277,15 @@ async def _on_run_error(chunk: BaseRunOutputEvent, state: StreamState, stream: A
 
 
 async def _on_run_paused(chunk: BaseRunOutputEvent, state: StreamState, stream: AsyncChatStream) -> bool:
-    # For Teams: member agents emit RunPausedEvent (agent_id) before Team
-    # propagates the pause as TeamRunPausedEvent (team_id). Only stop on
-    # the Team-level pause so the HITL card carries the Team's run_id —
-    # otherwise aget_run_output(member_run_id) fails at approval time.
+    # For Teams: only stop on TeamRunPausedEvent (has team_id), not member RunPausedEvent.
+    # HITL card must carry Team's run_id — aget_run_output(member_run_id) fails at approval.
     if state.entity_type == "team":
-        has_team_id = getattr(chunk, "team_id", None) is not None
-        if not has_team_id:
-            # Member pause — let it stream through, wait for Team pause
+        if getattr(chunk, "team_id", None) is None:
             return False
 
-    # Stash the event; the router attaches one `card` block per pending
-    # requirement via stream.stop(blocks=...). The card carries the full
-    # approval context (tool name, args, Approve/Deny buttons) and coexists
-    # with the streaming plan above it.
     state.paused_event = cast(Union["AgentRunPausedEvent", "TeamRunPausedEvent"], chunk)
-    # Keep pending task_cards in-progress rather than flipping to complete —
-    # the run isn't finished, it's awaiting human input.
     state.terminal_status = "in_progress"
 
-    # Emit a "pending" task card for each paused requirement so the plan
-    # block above the awaiting indicator shows WHAT the agent is waiting on.
-    # Regular tool_call_started events create these for normal tools, but
-    # system tools like ask_user (user_feedback) bypass that event stream
-    # and pause directly — without this explicit emit, their bubble has no
-    # plan block and Slack's AI-Stream UI collapses the pairing, hiding
-    # the user's trigger from the thread pane.
     from agno.os.interfaces.slack.types import _tool_name
 
     requirements = list(getattr(chunk, "active_requirements", None) or [])
@@ -310,29 +295,13 @@ async def _on_run_paused(chunk: BaseRunOutputEvent, state: StreamState, stream: 
         if key in state.task_cards:
             continue
         tool_label = _tool_name(req)
-        # Emit as "complete" — semantically "the agent has decided which
-        # tool to invoke, now awaiting human input". A non-complete status
-        # at stream.stop causes Slack's AI-Stream UI to render the bubble
-        # as "Something went wrong" with a red error icon, regardless of
-        # whether we transition to pending. The awaiting indicator and
-        # Card block posted below the bubble carry the actual pause state.
+        # "complete" required — non-complete at stream.stop renders Slack error icon
         state.track_task(key, tool_label, "complete")
         await _emit_task(stream, key, tool_label, "complete")
 
-    # Fallback placeholder — only if we couldn't emit any task cards (e.g.
-    # requirements empty for some reason) and no prior tool content streamed.
-    # Without at least one non-empty block, Slack's AI-Stream UI collapses
-    # the question+response pairing and hides the trigger.
     if not state.has_content() and state.stream_chars_sent == 0 and not state.task_cards:
         await stream.append(markdown_text="_Reviewing request…_")
 
-    # The "⏸ Awaiting approval of <tool>…" indicator is posted by the
-    # router as a SEPARATE chat.postMessage in the same thread (see the
-    # pause path in attach_to_app). Posting it separately means we can
-    # chat.delete just that message once the user decides — preserving
-    # the tool-call audit trail in THIS streamed bubble (Thinking, prior
-    # tool calls) which would otherwise be collateral damage of any
-    # cleanup that targeted the streamed message.
     return True
 
 
