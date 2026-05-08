@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agno.os.interfaces.slack.builders import build_pause_message
-from agno.os.interfaces.slack.types import _tool_name
+from agno.os.interfaces.slack.types import _tool_name, block_to_dict
 from agno.utils.log import log_error
 
 if TYPE_CHECKING:
@@ -83,17 +82,7 @@ async def post_pause_card(
 
     try:
         blocks = build_pause_message(run_id, requirements, awaiting_ts)
-
-        def to_dict(b: Any) -> Dict[str, Any]:
-            if hasattr(b, "to_dict"):
-                return b.to_dict()
-            if hasattr(b, "model_dump"):
-                return b.model_dump(exclude_none=True, mode="json")
-            if is_dataclass(b) and not isinstance(b, type):
-                return asdict(b)
-            raise TypeError(f"Cannot serialize block of type {type(b).__name__}")
-
-        block_dicts = [to_dict(b) for b in blocks]
+        block_dicts = [block_to_dict(b) for b in blocks]
         resp = await client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,

@@ -341,10 +341,6 @@ def build_original_row_card(
     ]
 
 
-# Backward compat alias
-build_original_confirmation_card = build_original_row_card
-
-
 def _build_input_row(requirement: RunRequirement) -> List[Any]:
     req_id = requirement.id or ""
     blocks: List[Any] = []
@@ -462,8 +458,6 @@ def response_blocks(
     preserved: List[Dict[str, Any]] = []
     submissions: List[str] = []
 
-    confirmation_decisions: List[str] = []
-
     for block in original_blocks:
         btype = block.get("type")
         block_id = block.get("block_id", "")
@@ -485,8 +479,6 @@ def response_blocks(
                     if req.id == req_id:
                         tool_name = _tool_name(req)
                         break
-                status = "Approved" if decision == "approve" else "Denied"
-                confirmation_decisions.append(f"{status}: {tool_name}")
             continue
 
         # Skip rejection reason inputs — they're part of confirmation, not submission

@@ -23,7 +23,7 @@ from agno.os.interfaces.slack.helpers import (
 )
 from agno.os.interfaces.slack.security import verify_slack_signature
 from agno.os.interfaces.slack.state import StreamState, TaskStatus
-from agno.os.interfaces.slack.types import decode_row_button_value, decode_submit_button_value
+from agno.os.interfaces.slack.types import block_to_dict, decode_row_button_value, decode_submit_button_value
 from agno.team import RemoteTeam, Team
 from agno.tools.slack import SlackTools
 from agno.utils.log import log_error, log_info
@@ -262,17 +262,6 @@ def attach_routes(
 
         original_blocks = list(message.get("blocks") or [])
 
-        def to_dict(b: Any) -> Dict[str, Any]:
-            if hasattr(b, "to_dict"):
-                return b.to_dict()
-            if hasattr(b, "model_dump"):
-                return b.model_dump(exclude_none=True, mode="json")
-            from dataclasses import asdict, is_dataclass
-
-            if is_dataclass(b) and not isinstance(b, type):
-                return asdict(b)
-            return b if isinstance(b, dict) else {}
-
         # Build updated blocks: toggle clicked row to "approved", preserve others
         updated_blocks: List[Dict[str, Any]] = []
         pending_confirmation_rows: set[str] = set()
@@ -297,7 +286,7 @@ def attach_routes(
                     selected="approve",
                 )
                 for tb in toggle_blocks:
-                    updated_blocks.append(to_dict(tb))
+                    updated_blocks.append(block_to_dict(tb))
                 # Add decision marker for parse_submit_payload
                 updated_blocks.append(
                     {
@@ -320,8 +309,8 @@ def attach_routes(
             elif block_id.startswith("rowact:") and "confirmation" in block_id:
                 updated_blocks.append(blk)
                 parts = block_id.split(":")
-                # Track as pending unless it's already in a "selected" state
-                if len(parts) >= 2 and ":selected:" not in block_id:
+                # Track as pending unless already decided (selected or confirmed rejection)
+                if len(parts) >= 2 and ":selected:" not in block_id and ":decided:" not in block_id:
                     pending_confirmation_rows.add(parts[1])
             # All other blocks: preserve
             else:
@@ -378,17 +367,6 @@ def attach_routes(
 
         original_blocks = list(message.get("blocks") or [])
 
-        def to_dict(b: Any) -> Dict[str, Any]:
-            if hasattr(b, "to_dict"):
-                return b.to_dict()
-            if hasattr(b, "model_dump"):
-                return b.model_dump(exclude_none=True, mode="json")
-            from dataclasses import asdict, is_dataclass
-
-            if is_dataclass(b) and not isinstance(b, type):
-                return asdict(b)
-            return b if isinstance(b, dict) else {}
-
         # Build updated blocks: toggle clicked row to "deny" + add reason input
         updated_blocks: List[Dict[str, Any]] = []
 
@@ -409,7 +387,7 @@ def attach_routes(
                     selected="deny",
                 )
                 for tb in toggle_blocks:
-                    updated_blocks.append(to_dict(tb))
+                    updated_blocks.append(block_to_dict(tb))
                 # Add inline reason input right after the card
                 reason_input = InputBlock(
                     block_id=f"reject_reason:{req_id}",
@@ -421,7 +399,7 @@ def attach_routes(
                     ),
                     optional=True,
                 )
-                updated_blocks.append(to_dict(reason_input))
+                updated_blocks.append(block_to_dict(reason_input))
                 # Add decision marker for parse_submit_payload
                 updated_blocks.append(
                     {
@@ -443,8 +421,7 @@ def attach_routes(
         # Check if we need to add a Submit button for confirmation-only cards
         # (cards with no global Submit button and all rows now decided)
         has_global_submit = any(
-            (blk.get("type") == "actions" and blk.get("block_id", "").startswith("pause:"))
-            for blk in updated_blocks
+            (blk.get("type") == "actions" and blk.get("block_id", "").startswith("pause:")) for blk in updated_blocks
         )
         pending_confirmation_rows: set[str] = set()
         for blk in updated_blocks:
@@ -463,8 +440,8 @@ def attach_routes(
         # Add Submit button if all rows decided and no global submit exists
         if not pending_confirmation_rows and not has_global_submit and run_id:
             from slack_sdk.models.blocks import ActionsBlock
-            from slack_sdk.models.blocks.block_elements import ButtonElement
             from slack_sdk.models.blocks.basic_components import PlainTextObject
+            from slack_sdk.models.blocks.block_elements import ButtonElement
 
             from agno.os.interfaces.slack.types import encode_submit_button_value
 
@@ -614,17 +591,6 @@ def attach_routes(
         if not channel or not card_ts:
             return
 
-        def to_dict(b: Any) -> Dict[str, Any]:
-            if hasattr(b, "to_dict"):
-                return b.to_dict()
-            if hasattr(b, "model_dump"):
-                return b.model_dump(exclude_none=True, mode="json")
-            from dataclasses import asdict, is_dataclass
-
-            if is_dataclass(b) and not isinstance(b, type):
-                return asdict(b)
-            raise TypeError(f"Cannot serialize block of type {type(b).__name__}")
-
         original_blocks = list(message.get("blocks") or [])
 
         # Build updated blocks: replace rejection input with restored card, preserve others
@@ -645,7 +611,7 @@ def attach_routes(
                     pause_type=original_pause_type,
                 )
                 for rb in restored_blocks:
-                    updated_blocks.append(to_dict(rb))
+                    updated_blocks.append(block_to_dict(rb))
             # Skip the rejection reason input block (replaced above)
             elif block_id == f"reject_reason:{req_id}":
                 continue
@@ -747,10 +713,7 @@ def attach_routes(
         original_blocks = list((payload.get("message") or {}).get("blocks") or [])
         has_inputs = any(b.get("type") == "input" for b in original_blocks)
         # Check for cards with actions (buttons) — matches what response_blocks strips
-        has_interactive_cards = any(
-            b.get("type") == "card" and b.get("actions")
-            for b in original_blocks
-        )
+        has_interactive_cards = any(b.get("type") == "card" and b.get("actions") for b in original_blocks)
         if has_inputs or has_interactive_cards:
             from agno.os.interfaces.slack.builders import response_blocks
 

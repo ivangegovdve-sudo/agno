@@ -459,3 +459,263 @@ class TestFormatDecisionTitle:
         decision = ParsedDecision(requirement_id="r1", pause_type="confirmation", approved=True)
         result = format_decision_title(decision, req)
         assert "\n" not in result
+
+
+# -- build_confirmation_toggle_card --
+
+
+class TestBuildConfirmationToggleCard:
+    def test_approve_selected_has_primary_style(self):
+        from agno.os.interfaces.slack.builders import build_confirmation_toggle_card
+
+        blocks = build_confirmation_toggle_card(
+            req_id="r1",
+            run_id="A1",
+            awaiting_ts="123.456",
+            tool_name="delete_file",
+            body_text="• path: `/tmp/x`",
+            selected="approve",
+        )
+        card = blocks[0]
+        assert card.block_id == "rowact:r1:confirmation:selected:approve"
+        approve_btn = card.actions[0]
+        assert approve_btn.text.text == "Approved"
+        assert approve_btn.style == "primary"
+
+    def test_deny_selected_has_danger_style(self):
+        from agno.os.interfaces.slack.builders import build_confirmation_toggle_card
+
+        blocks = build_confirmation_toggle_card(
+            req_id="r1",
+            run_id="A1",
+            awaiting_ts=None,
+            tool_name="delete_file",
+            body_text="• path: `/tmp/x`",
+            selected="deny",
+        )
+        card = blocks[0]
+        assert card.block_id == "rowact:r1:confirmation:selected:deny"
+        deny_btn = card.actions[1]
+        assert deny_btn.text.text == "Denied"
+        assert deny_btn.style == "danger"
+
+    def test_preserves_tool_name_and_body(self):
+        from agno.os.interfaces.slack.builders import build_confirmation_toggle_card
+
+        blocks = build_confirmation_toggle_card(
+            req_id="r1",
+            run_id="A1",
+            awaiting_ts=None,
+            tool_name="cancel_subscription",
+            body_text="• customer_id: `C-42`",
+            selected="approve",
+        )
+        card = blocks[0]
+        assert card.title.text == "*cancel_subscription*"
+        assert card.body.text == "• customer_id: `C-42`"
+
+
+# -- build_rejection_input_card --
+
+
+class TestBuildRejectionInputCard:
+    def test_card_has_confirm_and_cancel_buttons(self):
+        from agno.os.interfaces.slack.builders import build_rejection_input_card
+
+        blocks = build_rejection_input_card(
+            req_id="r1",
+            run_id="A1",
+            awaiting_ts="123.456",
+            tool_name="delete_file",
+            original_title="*delete_file*",
+            original_body="• path: `/tmp/x`",
+        )
+        card = blocks[0]
+        assert card.block_id == "rowact:r1:rejection_input"
+        assert len(card.actions) == 2
+        assert card.actions[0].action_id == "reject_confirm"
+        assert card.actions[1].action_id == "reject_cancel"
+
+    def test_includes_reason_input_block(self):
+        from agno.os.interfaces.slack.builders import build_rejection_input_card
+
+        blocks = build_rejection_input_card(
+            req_id="r1",
+            run_id="A1",
+            awaiting_ts=None,
+            tool_name="delete_file",
+            original_title="*delete_file*",
+            original_body="body",
+        )
+        assert len(blocks) == 2
+        reason_block = blocks[1]
+        assert reason_block.block_id == "reject_reason:r1"
+        assert reason_block.element.action_id == "reject_reason"
+        assert reason_block.element.multiline is True
+
+    def test_confirm_button_has_danger_style(self):
+        from agno.os.interfaces.slack.builders import build_rejection_input_card
+
+        blocks = build_rejection_input_card(
+            req_id="r1",
+            run_id="A1",
+            awaiting_ts=None,
+            tool_name="delete_file",
+            original_title="t",
+            original_body="b",
+        )
+        confirm_btn = blocks[0].actions[0]
+        assert confirm_btn.style == "danger"
+        assert confirm_btn.text.text == "Confirm Rejection"
+
+
+# -- build_original_row_card --
+
+
+class TestBuildOriginalRowCard:
+    def test_restores_approve_deny_buttons(self):
+        from agno.os.interfaces.slack.builders import build_original_row_card
+
+        blocks = build_original_row_card(
+            req_id="r1",
+            run_id="A1",
+            awaiting_ts="123.456",
+            original_title="*delete_file*",
+            original_body="• path: `/tmp/x`",
+        )
+        card = blocks[0]
+        assert card.block_id == "rowact:r1:confirmation"
+        assert len(card.actions) == 2
+        assert card.actions[0].action_id == ACTION_ROW_APPROVE
+        assert card.actions[1].action_id == ACTION_ROW_REJECT
+
+    def test_preserves_title_and_body(self):
+        from agno.os.interfaces.slack.builders import build_original_row_card
+
+        blocks = build_original_row_card(
+            req_id="r1",
+            run_id="A1",
+            awaiting_ts=None,
+            original_title="*cancel_subscription*",
+            original_body="• customer_id: `C-42`",
+        )
+        card = blocks[0]
+        assert card.title.text == "*cancel_subscription*"
+        assert card.body.text == "• customer_id: `C-42`"
+
+    def test_button_values_encode_routing_info(self):
+        from agno.os.interfaces.slack.builders import build_original_row_card
+
+        blocks = build_original_row_card(
+            req_id="r1",
+            run_id="A1",
+            awaiting_ts="123.456",
+            original_title="t",
+            original_body="b",
+        )
+        card = blocks[0]
+        assert card.actions[0].value == "r1|A1|123.456"
+
+
+# -- response_blocks --
+
+
+class TestResponseBlocks:
+    def test_strips_actions_from_cards(self):
+        from agno.os.interfaces.slack.builders import response_blocks
+
+        original = [{"type": "card", "block_id": "rowact:r1:confirmation", "actions": [{"type": "button"}]}]
+        result = response_blocks(original, {}, [])
+        assert "actions" not in result[0]
+
+    def test_converts_selected_approve_to_approved_title(self):
+        from agno.os.interfaces.slack.builders import response_blocks
+
+        original = [
+            {
+                "type": "card",
+                "block_id": "rowact:r1:confirmation:selected:approve",
+                "title": {"type": "mrkdwn", "text": "*delete_file*"},
+                "actions": [],
+            }
+        ]
+        result = response_blocks(original, {}, [])
+        assert result[0]["title"]["text"] == "*Approved:* delete_file"
+
+    def test_converts_selected_deny_to_denied_title(self):
+        from agno.os.interfaces.slack.builders import response_blocks
+
+        original = [
+            {
+                "type": "card",
+                "block_id": "rowact:r1:confirmation:selected:deny",
+                "title": {"type": "mrkdwn", "text": "*delete_file*"},
+                "actions": [],
+            }
+        ]
+        result = response_blocks(original, {}, [])
+        assert result[0]["title"]["text"] == "*Denied:* delete_file"
+
+    def test_skips_actions_blocks(self):
+        from agno.os.interfaces.slack.builders import response_blocks
+
+        original = [
+            {"type": "card", "block_id": "x", "actions": []},
+            {"type": "actions", "block_id": "pause:A1"},
+        ]
+        result = response_blocks(original, {}, [])
+        assert len(result) == 1
+        assert result[0]["type"] == "card"
+
+    def test_skips_reject_reason_inputs(self):
+        from agno.os.interfaces.slack.builders import response_blocks
+
+        original = [
+            {"type": "input", "block_id": "reject_reason:r1"},
+            {"type": "card", "block_id": "x", "actions": []},
+        ]
+        result = response_blocks(original, {}, [])
+        assert len(result) == 1
+        assert result[0]["type"] == "card"
+
+    def test_builds_submitted_card_from_input_values(self):
+        from agno.os.interfaces.slack.builders import response_blocks
+
+        original = [
+            {
+                "type": "input",
+                "block_id": "row:r1:user_input:field1",
+                "label": {"type": "plain_text", "text": "Email"},
+                "element": {"type": "plain_text_input", "action_id": "input_field:field1"},
+            }
+        ]
+        state_values = {
+            "row:r1:user_input:field1": {
+                "input_field:field1": {"type": "plain_text_input", "value": "test@example.com"}
+            }
+        }
+        result = response_blocks(original, state_values, [])
+        submitted_card = result[-1]
+        assert submitted_card["type"] == "card"
+        assert submitted_card["title"]["text"] == "*Submitted*"
+        assert "Email" in submitted_card["body"]["text"]
+        assert "test@example.com" in submitted_card["body"]["text"]
+
+    def test_truncates_body_over_200_chars(self):
+        from agno.os.interfaces.slack.builders import response_blocks
+
+        original = [
+            {
+                "type": "input",
+                "block_id": "row:r1:user_input:field1",
+                "label": {"type": "plain_text", "text": "Data"},
+                "element": {"type": "plain_text_input", "action_id": "input_field:field1"},
+            }
+        ]
+        state_values = {
+            "row:r1:user_input:field1": {"input_field:field1": {"type": "plain_text_input", "value": "x" * 300}}
+        }
+        result = response_blocks(original, state_values, [])
+        submitted_card = result[-1]
+        assert len(submitted_card["body"]["text"]) <= 200
+        assert submitted_card["body"]["text"].endswith("...")

@@ -1,12 +1,24 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import base64
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from agno.run.requirement import PauseType
 
 if TYPE_CHECKING:
     from agno.run.requirement import RunRequirement
+
+
+def block_to_dict(block: Any) -> Dict[str, Any]:
+    """Convert a Slack block (SDK model, dataclass, or dict) to a plain dict."""
+    if hasattr(block, "to_dict"):
+        return block.to_dict()
+    if hasattr(block, "model_dump"):
+        return block.model_dump(exclude_none=True, mode="json")
+    if is_dataclass(block) and not isinstance(block, type):
+        return asdict(block)
+    return block if isinstance(block, dict) else {}
 
 
 @dataclass
@@ -125,17 +137,12 @@ def encode_reject_card_value(
     original_body: str,
     original_pause_type: str = "confirmation",
 ) -> str:
-    # Base64-encode title/body to avoid delimiter collisions
-    import base64
-
     title_b64 = base64.b64encode(original_title.encode()).decode()
     body_b64 = base64.b64encode(original_body.encode()).decode()
     return f"{req_id}|{run_id}|{awaiting_ts or ''}|{title_b64}|{body_b64}|{original_pause_type}"
 
 
 def decode_reject_card_value(value: str) -> Tuple[str, str, Optional[str], str, str, str]:
-    import base64
-
     parts = value.split("|", 5)
     if len(parts) < 5:
         return "", "", None, "", "", "confirmation"
