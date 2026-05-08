@@ -2,31 +2,18 @@ from __future__ import annotations
 
 import json
 from ssl import SSLContext
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Dict, List, Literal, Optional, Union
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from agno.agent import Agent, RemoteAgent
-from agno.os.interfaces.slack.events import process_event
-from agno.os.interfaces.slack.helpers import (
-    BotNameResolver,
-    build_run_metadata,
-    download_event_files_async,
-    extract_event_context,
-    resolve_channel_name,
-    resolve_slack_user,
-    send_slack_message_async,
-    should_respond,
-    strip_bot_mention,
-    upload_response_media_async,
-)
+from agno.os.interfaces.slack.event_handler import SlackEventHandler
+from agno.os.interfaces.slack.helpers import BotNameResolver
 from agno.os.interfaces.slack.hitl import HITLHandler
 from agno.os.interfaces.slack.security import verify_slack_signature
-from agno.os.interfaces.slack.state import StreamState, TaskStatus
 from agno.team import RemoteTeam, Team
 from agno.tools.slack import SlackTools
-from agno.utils.log import log_error
 from agno.workflow import RemoteWorkflow, Workflow
 
 # Slack sends lifecycle events for bots with these subtypes. Without this
@@ -107,6 +94,22 @@ def attach_routes(
         task_display_mode=task_display_mode,
         buffer_size=buffer_size,
     )
+    event_handler = SlackEventHandler(
+        slack_tools=slack_tools,
+        ssl=ssl,
+        entity=entity,
+        entity_id=entity_id,
+        entity_name=entity_name,
+        entity_type=entity_type,
+        bot_name_resolver=bot_name_resolver,
+        reply_to_mentions_only=reply_to_mentions_only,
+        resolve_user_identity=resolve_user_identity,
+        loading_text=loading_text,
+        loading_messages=loading_messages,
+        task_display_mode=task_display_mode,
+        buffer_size=buffer_size,
+        suggested_prompts=suggested_prompts,
+    )
 
     @router.post(
         "/events",
@@ -151,7 +154,7 @@ def attach_routes(
             event_type = event.get("type")
             # setSuggestedPrompts requires "Agents & AI Apps" mode (streaming UX only)
             if event_type == "assistant_thread_started" and streaming:
-                background_tasks.add_task(_handle_thread_started, event)
+                background_tasks.add_task(event_handler.handle_thread_started, event)
             # Bot self-loop prevention: check bot_id at BOTH the top-level event
             # AND inside message_changed's nested "message" object. Slack puts
             # bot_id at different nesting levels depending on event shape — the
@@ -164,9 +167,9 @@ def attach_routes(
             ):
                 pass
             elif streaming:
-                background_tasks.add_task(_stream_slack_response, data)
+                background_tasks.add_task(event_handler.handle_streaming, data)
             else:
-                background_tasks.add_task(_process_slack_event, data)
+                background_tasks.add_task(event_handler.handle_non_streaming, data)
 
         return SlackEventResponse(status="ok")
 
@@ -226,422 +229,5 @@ def attach_routes(
         # the same endpoint might also post interactions here.
 
         return SlackEventResponse(status="ok")
-
-    async def _process_slack_event(data: dict):
-        event = data["event"]
-        if not should_respond(event, reply_to_mentions_only):
-            return
-
-        from slack_sdk.web.async_client import AsyncWebClient
-
-        ctx = extract_event_context(event)
-        async_client = AsyncWebClient(token=slack_tools.token, ssl=ssl)
-
-        # Replace the bot's @mention with its Slack display name so the agent sees
-        # "hi Scout" instead of "hi " when the user types "hi @Scout"
-        bot_user_id = (data.get("authorizations") or [{}])[0].get("user_id")
-        bot_name = await bot_name_resolver.resolve(async_client, bot_user_id) if bot_user_id else None
-        ctx["message_text"] = strip_bot_mention(ctx["message_text"], bot_user_id, bot_name)
-
-        # Namespace with entity_id so threads don't collide across mounted interfaces
-        session_id = f"{entity_id}:{ctx['thread_id']}"
-
-        try:
-            await async_client.assistant_threads_setStatus(
-                channel_id=ctx["channel_id"],
-                thread_ts=ctx["thread_id"],
-                status=loading_text,
-            )
-        except Exception:
-            pass  # Best-effort UX — typing indicator failure doesn't block response
-
-        try:
-            # Resolve Slack user ID to email + display name when opted in
-            resolved_user_id = ctx["user"]
-            display_name = None
-            if resolve_user_identity:
-                resolved_user_id, display_name = await resolve_slack_user(async_client, ctx["user"])
-
-            channel_name = await resolve_channel_name(async_client, ctx["channel_id"])
-
-            files, images, videos, audio, skipped = await download_event_files_async(
-                slack_tools.token, event, slack_tools.max_file_size
-            )
-
-            message_text = ctx["message_text"]
-            if skipped:
-                notice = "[Skipped files: " + ", ".join(skipped) + "]"
-                message_text = f"{notice}\n{message_text}"
-            run_kwargs: Dict[str, Any] = {
-                "user_id": resolved_user_id,
-                "session_id": session_id,
-                "metadata": build_run_metadata(display_name, resolved_user_id, ctx),
-                "dependencies": {
-                    "Slack channel": f"#{channel_name}" if channel_name else ctx["channel_id"],
-                    "Slack channel_id": ctx["channel_id"],
-                    "Slack thread_ts": ctx["thread_id"],
-                },
-                "add_dependencies_to_context": True,
-                "files": files or None,
-                "images": images or None,
-                "videos": videos or None,
-                "audio": audio or None,
-            }
-
-            response = await entity.arun(message_text, **run_kwargs)  # type: ignore[union-attr]
-
-            if response:
-                if response.status == "ERROR":
-                    log_error(f"Error processing message: {response.content}")
-                    await send_slack_message_async(
-                        async_client,
-                        channel=ctx["channel_id"],
-                        message=f"{_ERROR_MESSAGE} Please try again later.",
-                        thread_ts=ctx["thread_id"],
-                    )
-                    return
-
-                # HITL: Handle paused status in non-streaming mode
-                if response.status == "PAUSED":
-                    requirements = list(getattr(response, "active_requirements", None) or [])
-                    run_id = getattr(response, "run_id", None)
-                    if run_id and requirements:
-                        from agno.os.interfaces.slack.pause import _PAUSE_LABELS, post_pause_card
-                        from agno.os.interfaces.slack.types import tool_name
-
-                        # Send the paused content message
-                        content = str(response.content) if response.content else ""
-                        if content:
-                            await send_slack_message_async(
-                                async_client,
-                                channel=ctx["channel_id"],
-                                message=content,
-                                thread_ts=ctx["thread_id"],
-                            )
-
-                        # Post awaiting indicator
-                        pause_labels = [_PAUSE_LABELS[r.pause_type].format(tool=tool_name(r)) for r in requirements]
-                        awaiting_ts = None
-                        if pause_labels:
-                            try:
-                                awaiting_resp = await async_client.chat_postMessage(
-                                    channel=ctx["channel_id"],
-                                    thread_ts=ctx["thread_id"],
-                                    text="\n".join(pause_labels),
-                                    mrkdwn=True,
-                                )
-                                awaiting_ts = awaiting_resp.get("ts")
-                            except Exception as exc:
-                                log_error(f"[HITL] Non-streaming awaiting indicator failed: {exc}")
-
-                        # Post the HITL card with approve/reject buttons
-                        try:
-                            await post_pause_card(
-                                async_client, response, ctx["channel_id"], ctx["thread_id"], awaiting_ts
-                            )
-                        except Exception as exc:
-                            log_error(f"[HITL] Non-streaming pause card failed: {exc}")
-                        return
-
-                if hasattr(response, "reasoning_content") and response.reasoning_content:
-                    rc = str(response.reasoning_content)
-                    formatted = "*Reasoning:*\n> " + rc.replace("\n", "\n> ")
-                    await send_slack_message_async(
-                        async_client,
-                        channel=ctx["channel_id"],
-                        message=formatted,
-                        thread_ts=ctx["thread_id"],
-                    )
-
-                content = str(response.content) if response.content else ""
-                await send_slack_message_async(
-                    async_client,
-                    channel=ctx["channel_id"],
-                    message=content,
-                    thread_ts=ctx["thread_id"],
-                )
-                await upload_response_media_async(async_client, response, ctx["channel_id"], ctx["thread_id"])
-        except Exception as e:
-            log_error(f"Error processing slack event: {str(e)}")
-            await send_slack_message_async(
-                async_client,
-                channel=ctx["channel_id"],
-                message=_ERROR_MESSAGE,
-                thread_ts=ctx["thread_id"],
-            )
-        finally:
-            # Clear "Thinking..." status. In streaming mode stream.stop() handles
-            # this automatically, but the non-streaming path must clear explicitly.
-            try:
-                await async_client.assistant_threads_setStatus(
-                    channel_id=ctx["channel_id"], thread_ts=ctx["thread_id"], status=""
-                )
-            except Exception:
-                pass  # Best-effort UX — clearing status indicator is cosmetic
-
-    async def _stream_slack_response(data: dict):
-        from slack_sdk.web.async_client import AsyncWebClient
-
-        event = data["event"]
-        if not should_respond(event, reply_to_mentions_only):
-            return
-
-        ctx = extract_event_context(event)
-
-        async_client = AsyncWebClient(token=slack_tools.token, ssl=ssl)
-
-        # Replace the bot's @mention with its Slack display name so the agent sees
-        # "hi Scout" instead of "hi " when the user types "hi @Scout"
-        bot_user_id = (data.get("authorizations") or [{}])[0].get("user_id")
-        bot_name = await bot_name_resolver.resolve(async_client, bot_user_id) if bot_user_id else None
-        ctx["message_text"] = strip_bot_mention(ctx["message_text"], bot_user_id, bot_name)
-
-        session_id = f"{entity_id}:{ctx['thread_id']}"
-
-        # Not consistently placed across Slack event envelope shapes
-        team_id = data.get("team_id") or event.get("team")
-        # CRITICAL: recipient_user_id must be the HUMAN user, not the bot.
-        # event["user"] = human who sent the message. data["authorizations"][0]["user_id"]
-        # = the bot's own user ID. Using the bot ID causes Slack to stream content
-        # to an invisible recipient, resulting in a blank bubble until stopStream.
-        user_id = ctx["user"]
-        state = StreamState(entity_type=entity_type, entity_name=entity_name)
-        stream = None
-
-        try:
-            try:
-                status_kwargs: Dict[str, Any] = {
-                    "channel_id": ctx["channel_id"],
-                    "thread_ts": ctx["thread_id"],
-                    "status": loading_text,
-                }
-                if loading_messages:
-                    status_kwargs["loading_messages"] = loading_messages
-                await async_client.assistant_threads_setStatus(**status_kwargs)
-            except Exception:
-                pass  # Best-effort UX — typing indicator failure doesn't block response
-
-            # Resolve Slack user ID to email + display name when opted in
-            resolved_user_id = ctx["user"]
-            display_name = None
-            if resolve_user_identity:
-                resolved_user_id, display_name = await resolve_slack_user(async_client, ctx["user"])
-
-            channel_name = await resolve_channel_name(async_client, ctx["channel_id"])
-
-            files, images, videos, audio, skipped = await download_event_files_async(
-                slack_tools.token, event, slack_tools.max_file_size
-            )
-
-            message_text = ctx["message_text"]
-            if skipped:
-                notice = "[Skipped files: " + ", ".join(skipped) + "]"
-                message_text = f"{notice}\n{message_text}"
-            run_kwargs: Dict[str, Any] = {
-                "stream": True,
-                # Enables event-level chunks for task card and tool lifecycle rendering
-                "stream_events": True,
-                "user_id": resolved_user_id,
-                "session_id": session_id,
-                "metadata": build_run_metadata(display_name, resolved_user_id, ctx),
-                "dependencies": {
-                    "Slack channel": f"#{channel_name}" if channel_name else ctx["channel_id"],
-                    "Slack channel_id": ctx["channel_id"],
-                    "Slack thread_ts": ctx["thread_id"],
-                },
-                "add_dependencies_to_context": True,
-                "files": files or None,
-                "images": images or None,
-                "videos": videos or None,
-                "audio": audio or None,
-            }
-
-            response_stream = entity.arun(message_text, **run_kwargs)  # type: ignore[union-attr]
-
-            if response_stream is None:
-                try:
-                    await async_client.assistant_threads_setStatus(
-                        channel_id=ctx["channel_id"], thread_ts=ctx["thread_id"], status=""
-                    )
-                except Exception:
-                    pass  # Best-effort UX — clearing status indicator is cosmetic
-                return
-
-            # Deferred so "Thinking..." indicator stays visible during file
-            # download and agent startup (opening earlier shows a blank bubble)
-            stream = await async_client.chat_stream(
-                channel=ctx["channel_id"],
-                thread_ts=ctx["thread_id"],
-                recipient_team_id=team_id,
-                recipient_user_id=user_id,
-                task_display_mode=task_display_mode,
-                buffer_size=buffer_size,
-            )
-
-            async def _rotate_stream(pending_text: str = ""):
-                # Close current bubble at Slack's payload limit, open a fresh one.
-                # Preserves in_progress task cards across the rotation so the user
-                # sees continuity rather than orphaned open cards in the old bubble.
-                nonlocal stream
-                assert stream is not None  # Caller only invokes after stream is opened
-                in_progress = [(k, v.title) for k, v in state.task_cards.items() if v.status == "in_progress"]
-                rotate_stop: Dict[str, Any] = {}
-                if state.task_cards:
-                    rotate_stop["chunks"] = state.resolve_all_pending("complete")
-                await stream.stop(**rotate_stop)
-                new_stream = await async_client.chat_stream(
-                    channel=ctx["channel_id"],
-                    thread_ts=ctx["thread_id"],
-                    recipient_team_id=team_id,
-                    recipient_user_id=user_id,
-                    task_display_mode=task_display_mode,
-                    buffer_size=buffer_size,
-                )
-                # Only mutate state after both async ops succeed
-                state.task_cards.clear()
-                state.stream_chars_sent = 0
-                stream = new_stream
-                # Re-open in-progress cards so the user sees continuity
-                for key, card_title in in_progress:
-                    state.track_task(key, card_title)
-                    await stream.append(
-                        markdown_text="",
-                        chunks=[{"type": "task_update", "id": key, "title": card_title, "status": "in_progress"}],
-                    )
-                if pending_text:
-                    continued = "_(continued)_\n" + pending_text
-                    await stream.append(markdown_text=continued)
-                    state.stream_chars_sent = len(continued)
-
-            async for chunk in response_stream:
-                state.collect_media(chunk)
-
-                ev = getattr(chunk, "event", None)
-                if ev:
-                    if await process_event(ev, chunk, state, stream):
-                        break
-
-                # Card overflow: rotate before Slack rejects the payload
-                if len(state.task_cards) >= _STREAM_CARD_LIMIT:
-                    await _rotate_stream(state.flush() if state.has_content() else "")
-
-                if state.has_content():
-                    if not state.title_set:
-                        state.title_set = True
-                        title = ctx["message_text"][:50].strip() or "New conversation"
-                        try:
-                            await async_client.assistant_threads_setTitle(
-                                channel_id=ctx["channel_id"], thread_ts=ctx["thread_id"], title=title
-                            )
-                        except Exception:
-                            pass  # Best-effort UX — title update failure doesn't block response
-
-                    content = state.flush()
-                    content_len = len(content)
-                    if state.stream_chars_sent + content_len <= _STREAM_CHAR_LIMIT:
-                        await stream.append(markdown_text=content)
-                        state.stream_chars_sent += content_len
-                    else:
-                        await _rotate_stream(content)
-            # Default to complete when no terminal error/cancel event arrived
-            final_status: TaskStatus = state.terminal_status or "complete"
-            completion_chunks = state.resolve_all_pending(final_status) if state.task_cards else []
-            stop_kwargs: Dict[str, Any] = {}
-            if state.has_content():
-                stop_kwargs["markdown_text"] = state.flush()
-            if completion_chunks:
-                stop_kwargs["chunks"] = completion_chunks
-
-            # HITL pause: stop the pre-pause stream cleanly and post the
-            # approval Card as a separate message. In-progress task cards
-            # flip to "pending" — Slack renders these as neutral waiting
-            # indicators (not the red errored state it would otherwise
-            # assign to in_progress cards whose stream has ended). The
-            # resume handler opens a fresh chat_stream for the continuation
-            # in a new bubble when the human clicks.
-            if state.paused_event is not None:
-                pause_run_id = getattr(state.paused_event, "run_id", None)
-                requirements = list(getattr(state.paused_event, "active_requirements", None) or [])
-                if pause_run_id and requirements:
-                    from agno.os.interfaces.slack.pause import finalize_pause, post_pause_card
-
-                    awaiting_ts = await finalize_pause(
-                        client=async_client,
-                        stream=stream,
-                        state=state,
-                        run_id=pause_run_id,
-                        channel=ctx["channel_id"],
-                        thread_ts=ctx["thread_id"],
-                        requirements=requirements,
-                    )
-                    try:
-                        await post_pause_card(
-                            async_client, state.paused_event, ctx["channel_id"], ctx["thread_id"], awaiting_ts
-                        )
-                    except Exception as exc:
-                        log_error(f"[HITL] Failed to post Card block (pause): {exc}")
-                    return
-
-            await stream.stop(**stop_kwargs)
-
-            await upload_response_media_async(async_client, state, ctx["channel_id"], ctx["thread_id"])
-
-        except Exception as e:
-            # Check structured response first (cheap); fall back to str(e) only if needed
-            slack_resp = getattr(e, "response", None)
-            slack_body = slack_resp.data if slack_resp else None
-            slack_error = slack_body.get("error", "") if isinstance(slack_body, dict) else ""
-            is_msg_too_long = "msg_too_long" in slack_error or "msg_blocks_too_long" in slack_error
-            if not is_msg_too_long:
-                is_msg_too_long = "msg_too_long" in str(e)
-            if not is_msg_too_long:
-                log_error(
-                    f"Error streaming slack response [channel={ctx['channel_id']}, thread={ctx['thread_id']}, user={user_id}]: {e}"
-                )
-            try:
-                await async_client.assistant_threads_setStatus(
-                    channel_id=ctx["channel_id"], thread_ts=ctx["thread_id"], status=""
-                )
-            except Exception:
-                pass  # Best-effort UX — clearing status indicator is cosmetic
-            # Clean up open stream so Slack doesn't show stuck progress indicators
-            if stream is not None:
-                try:
-                    stop_kwargs_err: Dict[str, Any] = {}
-                    if state.task_cards:
-                        stop_kwargs_err["chunks"] = state.resolve_all_pending(
-                            "complete" if is_msg_too_long else "error"
-                        )
-                    await stream.stop(**stop_kwargs_err)
-                except Exception:
-                    pass  # Best-effort cleanup — stream may already be closed
-            if not is_msg_too_long:
-                await send_slack_message_async(
-                    async_client,
-                    channel=ctx["channel_id"],
-                    message=_ERROR_MESSAGE,
-                    thread_ts=ctx["thread_id"],
-                )
-
-    async def _handle_thread_started(event: dict):
-        from slack_sdk.web.async_client import AsyncWebClient
-
-        async_client = AsyncWebClient(token=slack_tools.token, ssl=ssl)
-        thread_info = event.get("assistant_thread", {})
-        channel_id = thread_info.get("channel_id", "")
-        thread_ts = thread_info.get("thread_ts", "")
-        if not channel_id or not thread_ts:
-            return
-
-        prompts = suggested_prompts or [
-            {"title": "Help", "message": "What can you help me with?"},
-            {"title": "Search", "message": "Search the web for..."},
-        ]
-        try:
-            await async_client.assistant_threads_setSuggestedPrompts(
-                channel_id=channel_id, thread_ts=thread_ts, prompts=prompts
-            )
-        except Exception as e:
-            log_error(f"Failed to set suggested prompts: {str(e)}")
 
     return router

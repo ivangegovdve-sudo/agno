@@ -108,9 +108,7 @@ class HITLHandler:
         apply_decisions(decisions, requirements)
         return decisions
 
-    async def post_denial_cards(
-        self, stream: Any, decisions: List[Any], requirements: List[Any], run_id: str
-    ) -> None:
+    async def post_denial_cards(self, stream: Any, decisions: List[Any], requirements: List[Any], run_id: str) -> None:
         requirements_by_id = {r.id: r for r in requirements if r.id}
         for decision in decisions:
             req = requirements_by_id.get(decision.requirement_id)
