@@ -43,19 +43,19 @@ class ParseError:
 
 
 # Slack buttons have a 2000-char value limit; text fields have 3000-char limits
-def _truncate(text: str, limit: int) -> str:
+def truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1] + "…"
 
 
 # tool_execution may be None or lack tool_name if requirement is for user_input/feedback
-def _tool_name(requirement: "RunRequirement") -> str:
+def tool_name(requirement: "RunRequirement") -> str:
     tool = requirement.tool_execution
     return getattr(tool, "tool_name", None) or "tool"
 
 
-def _tool_args(requirement: "RunRequirement") -> Dict[str, Any]:
+def tool_args(requirement: "RunRequirement") -> Dict[str, Any]:
     tool = requirement.tool_execution
     # Empty dict fallback ensures JSON serialization never fails
     return getattr(tool, "tool_args", None) or {}
@@ -64,14 +64,14 @@ def _tool_args(requirement: "RunRequirement") -> Dict[str, Any]:
 # --- Slack state value extractors ---
 
 
-def _extract_field_value(action_state: Dict[str, Any]) -> Optional[str]:
+def extract_field_value(action_state: Dict[str, Any]) -> Optional[str]:
     # Slack nests static_select under selected_option; text inputs use value directly
     if action_state.get("type") == "static_select":
         return (action_state.get("selected_option") or {}).get("value")
     return action_state.get("value")
 
 
-def _extract_feedback_picks(action_state: Dict[str, Any]) -> List[str]:
+def extract_feedback_picks(action_state: Dict[str, Any]) -> List[str]:
     # Checkboxes return selected_options list; static_select returns single selected_option
     etype = action_state.get("type")
     if etype == "checkboxes":

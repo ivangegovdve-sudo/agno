@@ -29,7 +29,7 @@ from agno.os.interfaces.slack.ids import (
     pause_block_id,
     row_block_id,
 )
-from agno.os.interfaces.slack.types import _tool_args, _tool_name
+from agno.os.interfaces.slack.types import tool_args, tool_name
 from agno.run.requirement import RunRequirement
 from agno.utils.serialize import json_serializer
 
@@ -169,8 +169,8 @@ def _build_user_feedback_question_block(req_id: str, question: Any, q_index: int
 # Builds HITL confirmation card with Approve/Deny buttons for a tool execution
 def _build_confirmation_card(requirement: RunRequirement, run_id: str = "", awaiting_ts: Optional[str] = None) -> Card:
     req_id = requirement.id or ""
-    name = _tool_name(requirement)
-    args = _tool_args(requirement)
+    name = tool_name(requirement)
+    args = tool_args(requirement)
     button_value = encode_row_button_value(req_id, run_id, awaiting_ts)
     # Format args as bullet points in body (not subtitle which truncates)
     body_lines = [f"• {k}: `{render_arg_value(v)}`" for k, v in (args or {}).items()]

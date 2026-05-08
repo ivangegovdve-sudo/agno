@@ -16,11 +16,11 @@ from agno.os.interfaces.slack.types import (
     ParseError,
     SlackBlocks,
     SlackState,
-    _extract_feedback_picks,
-    _extract_field_value,
-    _tool_args,
-    _tool_name,
-    _truncate,
+    extract_feedback_picks,
+    extract_field_value,
+    tool_args,
+    tool_name,
+    truncate,
 )
 from agno.run.requirement import RunRequirement
 
@@ -60,8 +60,8 @@ def _parse_confirmation(
                 break
 
     if decision is None:
-        tool_name = _tool_name(requirement)
-        errors.append(ParseError(requirement_id=req_id, field=tool_name, message="Approval decision required"))
+        name = tool_name(requirement)
+        errors.append(ParseError(requirement_id=req_id, field=name, message="Approval decision required"))
         return ParsedDecision(requirement_id=req_id, pause_type="confirmation", approved=None)
 
     # Extract optional rejection reason from InputBlock state
@@ -90,7 +90,7 @@ def _parse_user_input(
 
     for field in requirement.user_input_schema or []:
         action_state = _get_action_state(state, f"{prefix}:{field.name}", f"{ACTION_INPUT_FIELD_PREFIX}{field.name}")
-        values[field.name] = _extract_field_value(action_state)
+        values[field.name] = extract_field_value(action_state)
         if values[field.name] is None:
             errors.append(ParseError(requirement_id=req_id, field=field.name, message="This field is required"))
 
@@ -107,7 +107,7 @@ def _parse_user_feedback(
 
     for i, question in enumerate(requirement.user_feedback_schema or []):
         action_state = _get_action_state(state, f"{prefix}:q{i}", f"{ACTION_FEEDBACK_SELECT}:{i}")
-        picked = _extract_feedback_picks(action_state)
+        picked = extract_feedback_picks(action_state)
         if not picked:
             errors.append(ParseError(requirement_id=req_id, field=question.question, message="No option selected"))
         selections[question.question] = picked
@@ -193,8 +193,8 @@ def format_decision_title(decision: ParsedDecision, requirement: RunRequirement)
         raise ValueError("format_decision_title only supports confirmation decisions")
 
     verb = "Approved" if decision.approved else "Denied"
-    name = _tool_name(requirement)
-    args_dict = _tool_args(requirement)
+    name = tool_name(requirement)
+    args_dict = tool_args(requirement)
     arg_parts = []
     for k, v in args_dict.items():
         try:
@@ -202,9 +202,9 @@ def format_decision_title(decision: ParsedDecision, requirement: RunRequirement)
         except (TypeError, ValueError):
             rendered = str(v)
         # Collapse newlines so multi-line JSON renders as single-line in the card header
-        rendered = _truncate(rendered.replace("\n", " ").strip(), DECISION_VALUE_MAX)
+        rendered = truncate(rendered.replace("\n", " ").strip(), DECISION_VALUE_MAX)
         arg_parts.append(f"{k}={rendered}")
     args = ", ".join(arg_parts)
     title = f"{verb}: {name}({args})" if args else f"{verb}: {name}"
     # Slack plan block wraps awkwardly on long titles; truncate to keep it single-line
-    return _truncate(title, DECISION_TITLE_MAX)
+    return truncate(title, DECISION_TITLE_MAX)

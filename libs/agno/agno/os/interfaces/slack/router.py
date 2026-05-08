@@ -780,7 +780,7 @@ def attach_routes(
                     run_id = getattr(response, "run_id", None)
                     if run_id and requirements:
                         from agno.os.interfaces.slack.pause import _PAUSE_LABELS, post_pause_card
-                        from agno.os.interfaces.slack.types import _tool_name
+                        from agno.os.interfaces.slack.types import tool_name
 
                         # Send the paused content message
                         content = str(response.content) if response.content else ""
@@ -793,7 +793,7 @@ def attach_routes(
                             )
 
                         # Post awaiting indicator
-                        pause_labels = [_PAUSE_LABELS[r.pause_type].format(tool=_tool_name(r)) for r in requirements]
+                        pause_labels = [_PAUSE_LABELS[r.pause_type].format(tool=tool_name(r)) for r in requirements]
                         awaiting_ts = None
                         if pause_labels:
                             try:

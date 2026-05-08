@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agno.os.interfaces.slack.builders import build_pause_message
-from agno.os.interfaces.slack.types import _tool_name, block_to_dict
+from agno.os.interfaces.slack.types import tool_name, block_to_dict
 from agno.utils.log import log_error
 
 if TYPE_CHECKING:
@@ -51,7 +51,7 @@ async def finalize_pause(
 
     awaiting_ts: Optional[str] = None
     # Build pause labels inline — maps pause_type to user-visible status text
-    pause_labels = [_PAUSE_LABELS[r.pause_type].format(tool=_tool_name(r)) for r in requirements]
+    pause_labels = [_PAUSE_LABELS[r.pause_type].format(tool=tool_name(r)) for r in requirements]
     if pause_labels:
         try:
             awaiting_resp = await client.chat_postMessage(
