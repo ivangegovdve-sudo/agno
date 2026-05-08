@@ -167,9 +167,10 @@ def _build_user_feedback_question_block(req_id: str, question: Any, q_index: int
     )
 
 
-def _build_confirmation_row(
+# Builds HITL confirmation card with Approve/Deny buttons for a tool execution
+def _build_confirmation_card(
     requirement: RunRequirement, run_id: str = "", awaiting_ts: Optional[str] = None
-) -> List[Any]:
+) -> Card:
     req_id = requirement.id or ""
     name = _tool_name(requirement)
     args = _tool_args(requirement)
@@ -177,27 +178,25 @@ def _build_confirmation_row(
     # Format args as bullet points in body (not subtitle which truncates)
     body_lines = [f"• {k}: `{render_arg_value(v)}`" for k, v in (args or {}).items()]
     body_text = "\n".join(body_lines) if body_lines else "_(no arguments)_"
-    return [
-        Card(
-            block_id=f"rowact:{req_id}:confirmation",
-            title=MarkdownTextObject(text=f"*{name}*"),
-            body=MarkdownTextObject(text=body_text),
-            actions=[
-                ButtonElement(
-                    action_id=ACTION_ROW_APPROVE,
-                    text=PlainTextObject(text="Approve", emoji=True),
-                    style="primary",
-                    value=button_value,
-                ),
-                ButtonElement(
-                    action_id=ACTION_ROW_REJECT,
-                    text=PlainTextObject(text="Deny", emoji=True),
-                    style="danger",
-                    value=button_value,
-                ),
-            ],
-        ),
-    ]
+    return Card(
+        block_id=f"rowact:{req_id}:confirmation",
+        title=MarkdownTextObject(text=f"*{name}*"),
+        body=MarkdownTextObject(text=body_text),
+        actions=[
+            ButtonElement(
+                action_id=ACTION_ROW_APPROVE,
+                text=PlainTextObject(text="Approve", emoji=True),
+                style="primary",
+                value=button_value,
+            ),
+            ButtonElement(
+                action_id=ACTION_ROW_REJECT,
+                text=PlainTextObject(text="Deny", emoji=True),
+                style="danger",
+                value=button_value,
+            ),
+        ],
+    )
 
 
 def build_confirmation_toggle_card(
@@ -382,7 +381,7 @@ def build_pause_message(
     for i, requirement in enumerate(requirements):
         kind = requirement.pause_type
         if kind == "confirmation":
-            row_blocks = _build_confirmation_row(requirement, run_id=run_id, awaiting_ts=awaiting_ts)
+            row_blocks = [_build_confirmation_card(requirement, run_id=run_id, awaiting_ts=awaiting_ts)]
         else:
             # Input/feedback/external rows: just fields, global Submit handles submission
             if kind == "user_input":
