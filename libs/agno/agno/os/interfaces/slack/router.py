@@ -18,6 +18,7 @@ from agno.os.interfaces.slack.helpers import (
     resolve_slack_user,
     send_slack_message_async,
     should_respond,
+    slack_error_code,
     strip_bot_mention,
     upload_response_media_async,
 )
@@ -54,18 +55,6 @@ _ERROR_MESSAGE = "Sorry, there was an error processing your message."
 # fresh stream bubble before hitting the wall rather than failing mid-response.
 _STREAM_CHAR_LIMIT = 39000
 _STREAM_CARD_LIMIT = 45
-
-
-def _slack_err_code(exc: BaseException) -> Optional[str]:
-    # Used in HITL logging to distinguish message_not_in_streaming_state (expired
-    # stream) from other failures that need different handling
-    resp = getattr(exc, "response", None)
-    data = getattr(resp, "data", None) if resp is not None else None
-    if isinstance(data, dict):
-        code = data.get("error")
-        if isinstance(code, str):
-            return code
-    return None
 
 
 class SlackEventResponse(BaseModel):
@@ -602,7 +591,7 @@ def attach_routes(
             except Exception as exc:
                 log_error(
                     f"[HITL] decision_update append failed: run_id={run_id} "
-                    f"slack_error={_slack_err_code(exc)!r} | {exc}"
+                    f"slack_error={slack_error_code(exc)!r} | {exc}"
                 )
 
         # Now stream the continuation. We reuse the same process_event
@@ -644,7 +633,7 @@ def attach_routes(
                         state.stream_chars_sent += len(content)
         except Exception as exc:
             log_error(
-                f"[HITL] continuation append failed: run_id={run_id} slack_error={_slack_err_code(exc)!r} | {exc}"
+                f"[HITL] continuation append failed: run_id={run_id} slack_error={slack_error_code(exc)!r} | {exc}"
             )
 
         # If the continuation paused again, finalize the pre-pause bubble
@@ -687,7 +676,7 @@ def attach_routes(
             except Exception as exc:
                 log_error(
                     f"[HITL] stream.stop after resume failed: run_id={run_id} "
-                    f"slack_error={_slack_err_code(exc)!r} | {exc}"
+                    f"slack_error={slack_error_code(exc)!r} | {exc}"
                 )
 
     async def _post_ephemeral(

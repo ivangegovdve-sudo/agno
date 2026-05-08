@@ -2,6 +2,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+
+def slack_error_code(exc: BaseException) -> Optional[str]:
+    # Extracts Slack API error code from exception for logging/handling
+    resp = getattr(exc, "response", None)
+    data = getattr(resp, "data", None) if resp else None
+    if isinstance(data, dict):
+        code = data.get("error")
+        if isinstance(code, str):
+            return code
+    return None
+
 from agno.media import Audio, File, Image, Video
 from agno.utils.log import log_error, log_warning
 
