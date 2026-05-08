@@ -466,19 +466,8 @@ def response_blocks(
         if btype == "actions":
             continue
 
-        # Decision marker sections — extract decision status for summary
+        # Decision marker sections — already rendered inline, skip
         if btype == "section" and ":confirmation:decided:" in block_id:
-            # Format: row:{req_id}:confirmation:decided:{approve|deny}
-            parts = block_id.split(":")
-            if len(parts) >= 5:
-                decision = parts[4]
-                req_id = parts[1]
-                # Find matching requirement for tool name
-                tool_name = "tool"
-                for req in requirements:
-                    if req.id == req_id:
-                        tool_name = _tool_name(req)
-                        break
             continue
 
         # Skip rejection reason inputs — they're part of confirmation, not submission
