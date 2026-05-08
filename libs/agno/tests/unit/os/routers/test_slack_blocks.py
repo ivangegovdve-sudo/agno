@@ -512,60 +512,6 @@ class TestBuildConfirmationToggleCard:
         assert card.body.text == "• customer_id: `C-42`"
 
 
-# -- _build_rejection_input_card --
-
-
-class TestBuildRejectionInputCard:
-    def test_card_has_confirm_and_cancel_buttons(self):
-        from agno.os.interfaces.slack.builders import _build_rejection_input_card
-
-        blocks = _build_rejection_input_card(
-            req_id="r1",
-            run_id="A1",
-            awaiting_ts="123.456",
-            tool_name="delete_file",
-            original_title="*delete_file*",
-            original_body="• path: `/tmp/x`",
-        )
-        card = blocks[0]
-        assert card.block_id == "rowact:r1:rejection_input"
-        assert len(card.actions) == 2
-        assert card.actions[0].action_id == "reject_confirm"
-        assert card.actions[1].action_id == "reject_cancel"
-
-    def test_includes_reason_input_block(self):
-        from agno.os.interfaces.slack.builders import _build_rejection_input_card
-
-        blocks = _build_rejection_input_card(
-            req_id="r1",
-            run_id="A1",
-            awaiting_ts=None,
-            tool_name="delete_file",
-            original_title="*delete_file*",
-            original_body="body",
-        )
-        assert len(blocks) == 2
-        reason_block = blocks[1]
-        assert reason_block.block_id == "reject_reason:r1"
-        assert reason_block.element.action_id == "reject_reason"
-        assert reason_block.element.multiline is True
-
-    def test_confirm_button_has_danger_style(self):
-        from agno.os.interfaces.slack.builders import _build_rejection_input_card
-
-        blocks = _build_rejection_input_card(
-            req_id="r1",
-            run_id="A1",
-            awaiting_ts=None,
-            tool_name="delete_file",
-            original_title="t",
-            original_body="b",
-        )
-        confirm_btn = blocks[0].actions[0]
-        assert confirm_btn.style == "danger"
-        assert confirm_btn.text.text == "Confirm Rejection"
-
-
 # -- build_original_row_card --
 
 

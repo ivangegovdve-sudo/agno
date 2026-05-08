@@ -20,14 +20,10 @@ from agno.os.interfaces.slack.types import (
     ACTION_EXTERNAL_RESULT,
     ACTION_FEEDBACK_SELECT,
     ACTION_INPUT_FIELD_PREFIX,
-    ACTION_REJECT_CANCEL,
-    ACTION_REJECT_CONFIRM,
-    ACTION_REJECT_REASON,
     ACTION_ROW_APPROVE,
     ACTION_ROW_REJECT,
     _tool_args,
     _tool_name,
-    encode_reject_card_value,
     encode_row_button_value,
     row_block_id,
 )
@@ -230,52 +226,6 @@ def _build_confirmation_toggle_card(
         body=MarkdownTextObject(text=body_text),
         actions=[approve_btn, deny_btn],
     )
-
-
-# Builds rejection flow: Card with Confirm/Cancel buttons + reason input field
-def _build_rejection_input_card(
-    req_id: str,
-    run_id: str,
-    awaiting_ts: Optional[str],
-    tool_name: str,
-    original_title: str,
-    original_body: str,
-    original_pause_type: str = "confirmation",
-) -> List[Any]:
-    # Embed original card data in button values so Cancel can restore the Approve/Deny card
-    button_value = encode_reject_card_value(
-        req_id, run_id, awaiting_ts, original_title, original_body, original_pause_type
-    )
-    return [
-        Card(
-            block_id=f"rowact:{req_id}:rejection_input",
-            title=MarkdownTextObject(text=f"*Deny: {tool_name}*"),
-            subtitle=MarkdownTextObject(text="_Provide an optional reason for rejection_"),
-            actions=[
-                ButtonElement(
-                    action_id=ACTION_REJECT_CONFIRM,
-                    text=PlainTextObject(text="Confirm Rejection", emoji=True),
-                    style="danger",
-                    value=button_value,
-                ),
-                ButtonElement(
-                    action_id=ACTION_REJECT_CANCEL,
-                    text=PlainTextObject(text="Cancel", emoji=True),
-                    value=button_value,
-                ),
-            ],
-        ),
-        InputBlock(
-            block_id=f"reject_reason:{req_id}",
-            label=PlainTextObject(text="Reason"),
-            element=PlainTextInputElement(
-                action_id=ACTION_REJECT_REASON,
-                placeholder=PlainTextObject(text="Why are you rejecting this action?"),
-                multiline=True,
-            ),
-            optional=True,
-        ),
-    ]
 
 
 def build_original_row_card(
