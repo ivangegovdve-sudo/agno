@@ -14,10 +14,10 @@ from agno.os.interfaces.slack.builders import (
 )
 from agno.os.interfaces.slack.events import process_event
 from agno.os.interfaces.slack.helpers import slack_error_code
-from agno.os.interfaces.slack.ids import decode_submit_button_value
 from agno.os.interfaces.slack.interactions import (
     apply_decisions,
     extract_row_action_context,
+    extract_submit_context,
     parse_submit_payload,
     synthetic_submit_payload,
 )
@@ -58,37 +58,6 @@ class HITLHandler:
         except Exception as exc:
             log_error(f"[HITL] chat_update failed for ts={ts}: {exc}")
             return False
-
-    def extract_submit_context(self, payload: Dict[str, Any]) -> Optional[SubmitContext]:
-        actions = payload.get("actions") or []
-        if not actions:
-            return None
-        submit_block_id = actions[0].get("block_id") or ""
-        if not submit_block_id.startswith("pause:"):
-            return None
-        run_id = submit_block_id.removeprefix("pause:")
-
-        channel = (payload.get("channel") or {}).get("id")
-        message = payload.get("message") or {}
-        msg_ts = message.get("ts")
-        if not (run_id and channel and msg_ts):
-            return None
-
-        thread_ts = message.get("thread_ts") or msg_ts
-        button_value = actions[0].get("value") or ""
-        _, awaiting_ts = decode_submit_button_value(button_value)
-
-        return SubmitContext(
-            run_id=run_id,
-            channel=channel,
-            msg_ts=msg_ts,
-            thread_ts=thread_ts,
-            session_id=f"{self.entity_id}:{thread_ts}",
-            awaiting_ts=awaiting_ts,
-            user_id=(payload.get("user") or {}).get("id", ""),
-            team_id=(payload.get("team") or {}).get("id"),
-            state_values=(payload.get("state") or {}).get("values") or {},
-        )
 
     async def delete_awaiting_indicator(self, channel: str, awaiting_ts: Optional[str]) -> None:
         if not awaiting_ts:
@@ -270,7 +239,7 @@ class HITLHandler:
         await self.update_message(ctx.channel, ctx.card_ts, "Rejection pending", blocks)
 
     async def handle_submit(self, payload: Dict[str, Any]) -> None:
-        ctx = self.extract_submit_context(payload)
+        ctx = extract_submit_context(payload, self.entity_id)
         if ctx is None:
             return
         log_info(f"[HITL] submit received: run_id={ctx.run_id} channel={ctx.channel}")

@@ -6,6 +6,7 @@ from agno.os.interfaces.slack.ids import (
     ACTION_EXTERNAL_RESULT,
     ACTION_REJECT_REASON,
     decode_row_button_value,
+    decode_submit_button_value,
     encode_submit_button_value,
     external_result_block_id,
     feedback_action_id,
@@ -22,6 +23,7 @@ from agno.os.interfaces.slack.types import (
     RowActionContext,
     SlackBlocks,
     SlackState,
+    SubmitContext,
     extract_feedback_picks,
     extract_field_value,
     tool_name,
@@ -154,6 +156,38 @@ def extract_row_action_context(payload: Dict[str, Any]) -> Optional[RowActionCon
         channel=channel,
         card_ts=card_ts,
         blocks=list(message.get("blocks") or []),
+    )
+
+
+def extract_submit_context(payload: Dict[str, Any], entity_id: str) -> Optional[SubmitContext]:
+    actions = payload.get("actions") or []
+    if not actions:
+        return None
+    submit_block_id = actions[0].get("block_id") or ""
+    if not submit_block_id.startswith("pause:"):
+        return None
+    run_id = submit_block_id.removeprefix("pause:")
+
+    channel = (payload.get("channel") or {}).get("id")
+    message = payload.get("message") or {}
+    msg_ts = message.get("ts")
+    if not (run_id and channel and msg_ts):
+        return None
+
+    thread_ts = message.get("thread_ts") or msg_ts
+    button_value = actions[0].get("value") or ""
+    _, awaiting_ts = decode_submit_button_value(button_value)
+
+    return SubmitContext(
+        run_id=run_id,
+        channel=channel,
+        msg_ts=msg_ts,
+        thread_ts=thread_ts,
+        session_id=f"{entity_id}:{thread_ts}",
+        awaiting_ts=awaiting_ts,
+        user_id=(payload.get("user") or {}).get("id", ""),
+        team_id=(payload.get("team") or {}).get("id"),
+        state_values=(payload.get("state") or {}).get("values") or {},
     )
 
 
