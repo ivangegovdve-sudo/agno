@@ -45,19 +45,18 @@ class HITLHandler:
     def _client(self) -> AsyncWebClient:
         return AsyncWebClient(token=self.slack_tools.token, ssl=self.ssl)
 
-    async def update_card(
+    async def update_message(
         self,
         channel: str,
         ts: str,
         text: str,
         blocks: List[Dict[str, Any]],
-        log_context: str,
     ) -> bool:
         try:
             await self._client().chat_update(channel=channel, ts=ts, text=text, blocks=blocks)
             return True
         except Exception as exc:
-            log_error(f"[HITL] chat_update ({log_context}) failed for {ts}: {exc}")
+            log_error(f"[HITL] chat_update failed for ts={ts}: {exc}")
             return False
 
     def extract_submit_context(self, payload: Dict[str, Any]) -> Optional[SubmitContext]:
@@ -108,7 +107,7 @@ class HITLHandler:
             return []
         return list(getattr(run_output, "active_requirements", None) or []) if run_output else []
 
-    async def lock_submitted_form(
+    async def freeze_form(
         self, ctx: SubmitContext, original_blocks: List[Dict[str, Any]], requirements: List[Any]
     ) -> None:
         has_inputs = any(b.get("type") == "input" for b in original_blocks)
@@ -140,7 +139,7 @@ class HITLHandler:
         apply_decisions(decisions, requirements)
         return decisions
 
-    async def emit_denied_decision_cards(
+    async def post_denial_cards(
         self, stream: Any, decisions: List[Any], requirements: List[Any], run_id: str
     ) -> None:
         requirements_by_id = {r.id: r for r in requirements if r.id}
@@ -170,7 +169,7 @@ class HITLHandler:
                     f"[HITL] decision_update append failed: run_id={run_id} slack_error={slack_error_code(exc)!r} | {exc}"
                 )
 
-    async def stream_continuation(
+    async def stream_resumed_run(
         self,
         ctx: SubmitContext,
         stream: Any,
@@ -206,7 +205,7 @@ class HITLHandler:
             )
         return state
 
-    async def finalize_or_repause(
+    async def complete_or_repause(
         self,
         ctx: SubmitContext,
         stream: Any,
@@ -256,19 +255,19 @@ class HITLHandler:
             return
 
         result = select_confirmation_row(ctx, selected="approve", include_reason_input=False)
-        await self.update_card(ctx.channel, ctx.card_ts, "Approval pending", result.blocks, "row approve")
+        await self.update_message(ctx.channel, ctx.card_ts, "Approval pending", result.blocks)
 
         if result.should_auto_submit:
             await self.handle_submit(synthetic_submit_payload(payload, ctx.run_id, ctx.awaiting_ts, result.blocks))
 
-    async def handle_row_reject_start(self, payload: Dict[str, Any]) -> None:
+    async def handle_row_reject(self, payload: Dict[str, Any]) -> None:
         ctx = extract_row_action_context(payload)
         if ctx is None:
             return
 
         result = select_confirmation_row(ctx, selected="deny", include_reason_input=True)
         blocks = append_submit_if_needed(result.blocks, ctx.run_id, ctx.awaiting_ts)
-        await self.update_card(ctx.channel, ctx.card_ts, "Rejection pending", blocks, "row reject")
+        await self.update_message(ctx.channel, ctx.card_ts, "Rejection pending", blocks)
 
     async def handle_submit(self, payload: Dict[str, Any]) -> None:
         ctx = self.extract_submit_context(payload)
@@ -288,7 +287,7 @@ class HITLHandler:
             return
 
         original_blocks = list((payload.get("message") or {}).get("blocks") or [])
-        await self.lock_submitted_form(ctx, original_blocks, requirements)
+        await self.freeze_form(ctx, original_blocks, requirements)
 
         stream = await self._client().chat_stream(
             channel=ctx.channel,
@@ -299,9 +298,9 @@ class HITLHandler:
             buffer_size=self.buffer_size,
         )
 
-        await self.emit_denied_decision_cards(stream, decisions, requirements, ctx.run_id)
-        state = await self.stream_continuation(ctx, stream, requirements)
-        await self.finalize_or_repause(ctx, stream, state)
+        await self.post_denial_cards(stream, decisions, requirements, ctx.run_id)
+        state = await self.stream_resumed_run(ctx, stream, requirements)
+        await self.complete_or_repause(ctx, stream, state)
 
     async def post_ephemeral(self, *, channel: str, user: str, text: str) -> None:
         try:

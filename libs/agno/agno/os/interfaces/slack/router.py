@@ -219,7 +219,7 @@ def attach_routes(
         if action_id == "row_approve":
             background_tasks.add_task(hitl.handle_row_approve, payload)
         elif action_id == "row_reject":
-            background_tasks.add_task(hitl.handle_row_reject_start, payload)
+            background_tasks.add_task(hitl.handle_row_reject, payload)
         elif action_id == "submit_pause":
             background_tasks.add_task(hitl.handle_submit, payload)
         # Silently ignore unknown action_ids — a non-HITL Slack app sharing
