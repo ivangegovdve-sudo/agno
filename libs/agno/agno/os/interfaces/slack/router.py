@@ -33,8 +33,6 @@ from agno.workflow import RemoteWorkflow, Workflow
 
 # Slack sends lifecycle events for bots with these subtypes. Without this
 # filter the router would try to process its own messages, causing infinite loops.
-# bot_message = bot posts; bot_add/remove/enable/disable = workspace config changes
-# message_changed/deleted = edits and retractions (would re-trigger on our own updates)
 _IGNORED_SUBTYPES = frozenset(
     {
         "bot_message",
@@ -50,9 +48,7 @@ _IGNORED_SUBTYPES = frozenset(
 # User-facing error message for failed requests
 _ERROR_MESSAGE = "Sorry, there was an error processing your message."
 
-# Slack caps streamed messages at ~40K total payload (text + task card blocks).
-# Beyond these limits Slack rejects append() with msg_too_long — we rotate to a
-# fresh stream bubble before hitting the wall rather than failing mid-response.
+# Slack caps streamed messages at ~40K total payload (text + task card blocks)
 _STREAM_CHAR_LIMIT = 39000
 _STREAM_CARD_LIMIT = 45
 
@@ -128,12 +124,10 @@ def attach_routes(
         if not verify_slack_signature(body, timestamp, slack_signature, signing_secret=signing_secret):
             raise HTTPException(status_code=403, detail="Invalid signature")
 
-        # Slack retries with X-Slack-Retry-Num header after ~3s if it doesn't
-        # get a 200. Since we ACK immediately and process in background, retries
-        # are always duplicates. Trade-off: if the server crashes mid-processing,
-        # the retried event carrying the same payload won't be reprocessed — but
-        # idempotency keys in Slack state would require external storage anyway,
-        # and for chat UX occasional lost messages beat duplicate responses.
+        # Slack retries after ~3s if it doesn't get a 200. Since we ACK
+        # immediately and process in background, retries are always duplicates.
+        # Trade-off: if the server crashes mid-processing, the retried event
+        # carrying the same payload won't be reprocessed — acceptable for chat.
         if request.headers.get("X-Slack-Retry-Num"):
             return SlackEventResponse(status="ok")
 
@@ -253,21 +247,21 @@ def attach_routes(
         pending_confirmation_rows: set[str] = set()
         has_global_submit = False
 
-        for blk in original_blocks:
-            block_id = blk.get("block_id", "")
-            blk_type = blk.get("type", "")
+        for block in original_blocks:
+            block_id = block.get("block_id", "")
+            block_type = block.get("type", "")
 
             # Match clicked row by block_id prefix (handles both fresh and toggled states)
             if block_id.startswith(f"rowact:{req_id}:confirmation"):
                 # Extract tool_name and body from current card
-                tool_name = (blk.get("title") or {}).get("text", "*tool*").replace("*", "")
-                body_text = (blk.get("body") or {}).get("text", "")
+                name = (block.get("title") or {}).get("text", "*tool*").replace("*", "")
+                body_text = (block.get("body") or {}).get("text", "")
                 # Build toggle card with "approve" selected
                 toggle_card = build_confirmation_toggle_card(
                     req_id=req_id,
                     run_id=run_id,
                     awaiting_ts=awaiting_ts,
-                    tool_name=tool_name,
+                    tool_name=name,
                     body_text=body_text,
                     selected="approve",
                 )
@@ -287,19 +281,19 @@ def attach_routes(
             elif block_id == f"reject_reason:{req_id}":
                 continue
             # Global Submit button
-            elif blk_type == "actions" and block_id.startswith("pause:"):
-                updated_blocks.append(blk)
+            elif block_type == "actions" and block_id.startswith("pause:"):
+                updated_blocks.append(block)
                 has_global_submit = True
             # Another confirmation row (not this one)
             elif block_id.startswith("rowact:") and "confirmation" in block_id:
-                updated_blocks.append(blk)
+                updated_blocks.append(block)
                 parts = block_id.split(":")
                 # Track as pending unless already decided (selected or confirmed rejection)
                 if len(parts) >= 2 and ":selected:" not in block_id and ":decided:" not in block_id:
                     pending_confirmation_rows.add(parts[1])
             # All other blocks: preserve
             else:
-                updated_blocks.append(blk)
+                updated_blocks.append(block)
 
         client = AsyncWebClient(token=slack_tools.token, ssl=ssl)
         try:
@@ -355,19 +349,19 @@ def attach_routes(
         # Build updated blocks: toggle clicked row to "deny" + add reason input
         updated_blocks: List[Dict[str, Any]] = []
 
-        for blk in original_blocks:
-            block_id = blk.get("block_id", "")
+        for block in original_blocks:
+            block_id = block.get("block_id", "")
 
             # Match clicked row by block_id prefix (handles both fresh and toggled states)
             if block_id.startswith(f"rowact:{req_id}:confirmation"):
-                tool_name = (blk.get("title") or {}).get("text", "*tool*").replace("*", "")
-                body_text = (blk.get("body") or {}).get("text", "")
+                name = (block.get("title") or {}).get("text", "*tool*").replace("*", "")
+                body_text = (block.get("body") or {}).get("text", "")
                 # Build toggle card with "deny" selected
                 toggle_card = build_confirmation_toggle_card(
                     req_id=req_id,
                     run_id=run_id,
                     awaiting_ts=awaiting_ts,
-                    tool_name=tool_name,
+                    tool_name=name,
                     body_text=body_text,
                     selected="deny",
                 )
@@ -400,16 +394,16 @@ def attach_routes(
                 continue
             # Preserve all other blocks
             else:
-                updated_blocks.append(blk)
+                updated_blocks.append(block)
 
         # Check if we need to add a Submit button for confirmation-only cards
         # (cards with no global Submit button and all rows now decided)
         has_global_submit = any(
-            (blk.get("type") == "actions" and blk.get("block_id", "").startswith("pause:")) for blk in updated_blocks
+            (b.get("type") == "actions" and b.get("block_id", "").startswith("pause:")) for b in updated_blocks
         )
         pending_confirmation_rows: set[str] = set()
-        for blk in updated_blocks:
-            block_id = blk.get("block_id", "")
+        for block in updated_blocks:
+            block_id = block.get("block_id", "")
             # Fresh confirmation row not yet decided
             if block_id.startswith("rowact:") and ":confirmation" in block_id and ":decided:" not in block_id:
                 parts = block_id.split(":")
