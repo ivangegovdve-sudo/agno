@@ -16,6 +16,8 @@ from agno.os.interfaces.slack.types import (
     ParseError,
     SlackBlocks,
     SlackState,
+    _extract_feedback_picks,
+    _extract_field_value,
     _tool_args,
     _tool_name,
     _truncate,
@@ -78,13 +80,6 @@ def _parse_confirmation(
     )
 
 
-def _extract_field_value(action_state: Dict[str, Any]) -> Optional[str]:
-    # Slack nests static_select under selected_option; text inputs use value directly
-    if action_state.get("type") == "static_select":
-        return (action_state.get("selected_option") or {}).get("value")
-    return action_state.get("value")
-
-
 # Parses text/dropdown fields from user_input_schema
 def _parse_user_input(
     requirement: RunRequirement, state: SlackState, errors: List[ParseError]
@@ -100,17 +95,6 @@ def _parse_user_input(
             errors.append(ParseError(requirement_id=req_id, field=field.name, message="This field is required"))
 
     return ParsedDecision(requirement_id=req_id, pause_type="user_input", input_values=values)
-
-
-def _extract_feedback_picks(action_state: Dict[str, Any]) -> List[str]:
-    # Checkboxes return selected_options list; static_select returns single selected_option
-    etype = action_state.get("type")
-    if etype == "checkboxes":
-        return [opt["value"] for opt in action_state.get("selected_options", []) if opt.get("value")]
-    if etype == "static_select":
-        selected = action_state.get("selected_option") or {}
-        return [selected["value"]] if selected.get("value") else []
-    return []
 
 
 # Parses checkbox/dropdown selections from user_feedback_schema questions

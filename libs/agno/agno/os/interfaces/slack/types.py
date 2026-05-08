@@ -59,3 +59,24 @@ def _tool_args(requirement: "RunRequirement") -> Dict[str, Any]:
     tool = requirement.tool_execution
     # Empty dict fallback ensures JSON serialization never fails
     return getattr(tool, "tool_args", None) or {}
+
+
+# --- Slack state value extractors ---
+
+
+def _extract_field_value(action_state: Dict[str, Any]) -> Optional[str]:
+    # Slack nests static_select under selected_option; text inputs use value directly
+    if action_state.get("type") == "static_select":
+        return (action_state.get("selected_option") or {}).get("value")
+    return action_state.get("value")
+
+
+def _extract_feedback_picks(action_state: Dict[str, Any]) -> List[str]:
+    # Checkboxes return selected_options list; static_select returns single selected_option
+    etype = action_state.get("type")
+    if etype == "checkboxes":
+        return [opt["value"] for opt in action_state.get("selected_options", []) if opt.get("value")]
+    if etype == "static_select":
+        selected = action_state.get("selected_option") or {}
+        return [selected["value"]] if selected.get("value") else []
+    return []
