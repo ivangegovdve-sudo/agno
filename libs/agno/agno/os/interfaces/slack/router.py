@@ -277,16 +277,15 @@ def attach_routes(
                 tool_name = (blk.get("title") or {}).get("text", "*tool*").replace("*", "")
                 body_text = (blk.get("body") or {}).get("text", "")
                 # Build toggle card with "approve" selected
-                toggle_blocks = [_build_confirmation_toggle_card(
+                toggle_card = _build_confirmation_toggle_card(
                     req_id=req_id,
                     run_id=run_id,
                     awaiting_ts=awaiting_ts,
                     tool_name=tool_name,
                     body_text=body_text,
                     selected="approve",
-                )]
-                for tb in toggle_blocks:
-                    updated_blocks.append(block_to_dict(tb))
+                )
+                updated_blocks.append(block_to_dict(toggle_card))
                 # Add decision marker for parse_submit_payload
                 updated_blocks.append(
                     {
@@ -378,16 +377,15 @@ def attach_routes(
                 tool_name = (blk.get("title") or {}).get("text", "*tool*").replace("*", "")
                 body_text = (blk.get("body") or {}).get("text", "")
                 # Build toggle card with "deny" selected
-                toggle_blocks = [_build_confirmation_toggle_card(
+                toggle_card = _build_confirmation_toggle_card(
                     req_id=req_id,
                     run_id=run_id,
                     awaiting_ts=awaiting_ts,
                     tool_name=tool_name,
                     body_text=body_text,
                     selected="deny",
-                )]
-                for tb in toggle_blocks:
-                    updated_blocks.append(block_to_dict(tb))
+                )
+                updated_blocks.append(block_to_dict(toggle_card))
                 # Add inline reason input right after the card
                 reason_input = InputBlock(
                     block_id=f"reject_reason:{req_id}",
