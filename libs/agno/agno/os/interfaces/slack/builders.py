@@ -19,6 +19,7 @@ from slack_sdk.models.blocks.block_elements import ButtonElement
 from agno.os.interfaces.slack.components import Card
 from agno.os.interfaces.slack.ids import (
     ACTION_EXTERNAL_RESULT,
+    ACTION_REJECT_REASON,
     ACTION_ROW_APPROVE,
     ACTION_ROW_REJECT,
     ACTION_SUBMIT,
@@ -32,7 +33,14 @@ from agno.os.interfaces.slack.ids import (
     user_input_action_id,
     user_input_block_id,
 )
-from agno.os.interfaces.slack.types import tool_args, tool_name
+from agno.os.interfaces.slack.types import (
+    ConfirmationRowSummary,
+    RowActionContext,
+    RowTransformResult,
+    block_to_dict,
+    tool_args,
+    tool_name,
+)
 from agno.run.requirement import RunRequirement
 from agno.utils.serialize import json_serializer
 
@@ -230,6 +238,101 @@ def build_confirmation_toggle_card(
         body=MarkdownTextObject(text=body_text),
         actions=[approve_btn, deny_btn],
     )
+
+
+# --- Row transformation helpers ---
+
+
+def decision_marker(req_id: str, decision: str) -> Dict[str, Any]:
+    # Creates hidden section block that parse_submit_payload reads to know row decision
+    return {
+        "type": "section",
+        "block_id": f"row:{req_id}:confirmation:decided:{decision}",
+        "text": {"type": "plain_text", "text": " "},
+    }
+
+
+def build_submit_button(run_id: str, awaiting_ts: Optional[str]) -> Dict[str, Any]:
+    # Creates Submit actions block for confirmation-only cards
+    submit_btn = ButtonElement(
+        action_id="submit_pause",
+        text=PlainTextObject(text="Submit", emoji=True),
+        style="primary",
+        value=encode_submit_button_value(run_id, awaiting_ts),
+    )
+    return ActionsBlock(block_id=f"pause:{run_id}", elements=[submit_btn]).to_dict()
+
+
+def select_confirmation_row(
+    ctx: RowActionContext,
+    selected: str,
+    include_reason_input: bool = False,
+) -> RowTransformResult:
+    # Transforms blocks: toggle clicked row to selected state, skip stale markers
+    from agno.os.interfaces.slack.interactions import confirmation_row_summary
+
+    updated: List[Dict[str, Any]] = []
+    for block in ctx.blocks:
+        block_id = block.get("block_id", "")
+
+        # Clicked row — replace with toggle card
+        if block_id.startswith(f"rowact:{ctx.req_id}:confirmation"):
+            name = (block.get("title") or {}).get("text", "*tool*").replace("*", "")
+            body_text = (block.get("body") or {}).get("text", "")
+            toggle_card = build_confirmation_toggle_card(
+                req_id=ctx.req_id,
+                run_id=ctx.run_id,
+                awaiting_ts=ctx.awaiting_ts,
+                tool_name=name,
+                body_text=body_text,
+                selected=selected,
+            )
+            updated.append(block_to_dict(toggle_card))
+            # Deny keeps card interactive so user can add optional reason before Submit
+            if include_reason_input:
+                reason_input = InputBlock(
+                    block_id=f"reject_reason:{ctx.req_id}",
+                    label=PlainTextObject(text="Reason (optional)"),
+                    element=PlainTextInputElement(
+                        action_id=ACTION_REJECT_REASON,
+                        placeholder=PlainTextObject(text="Why are you rejecting this action?"),
+                        multiline=True,
+                    ),
+                    optional=True,
+                )
+                updated.append(block_to_dict(reason_input))
+            updated.append(decision_marker(ctx.req_id, selected))
+            continue
+
+        # Skip stale decision markers and reason inputs for this row
+        if block_id.startswith(f"row:{ctx.req_id}:confirmation:decided:"):
+            continue
+        if block_id == f"reject_reason:{ctx.req_id}":
+            continue
+
+        # Preserve all other blocks
+        updated.append(block)
+
+    summary = confirmation_row_summary(updated)
+    # Auto-submit only for confirmation-only cards when all rows decided
+    should_auto_submit = bool(ctx.run_id and not summary.pending_ids and not summary.has_global_submit)
+    return RowTransformResult(blocks=updated, should_auto_submit=should_auto_submit)
+
+
+def append_submit_if_needed(
+    blocks: List[Dict[str, Any]],
+    run_id: str,
+    awaiting_ts: Optional[str],
+) -> List[Dict[str, Any]]:
+    # Adds Submit button to confirmation-only cards when all rows decided
+    from agno.os.interfaces.slack.interactions import confirmation_row_summary
+
+    if not run_id:
+        return blocks
+    summary = confirmation_row_summary(blocks)
+    if summary.pending_ids or summary.has_global_submit:
+        return blocks
+    return blocks + [build_submit_button(run_id, awaiting_ts)]
 
 
 # Builds InputBlocks for user_input pause type (text fields, dropdowns for bool/Enum/Literal)

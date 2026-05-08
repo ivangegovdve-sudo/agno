@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 from agno.os.interfaces.slack.ids import (
     ACTION_EXTERNAL_RESULT,
     ACTION_REJECT_REASON,
+    decode_row_button_value,
+    encode_submit_button_value,
     external_result_block_id,
     feedback_action_id,
     parse_row_block_id,
@@ -14,8 +16,10 @@ from agno.os.interfaces.slack.ids import (
     user_input_block_id,
 )
 from agno.os.interfaces.slack.types import (
+    ConfirmationRowSummary,
     ParsedDecision,
     ParseError,
+    RowActionContext,
     SlackBlocks,
     SlackState,
     extract_feedback_picks,
@@ -130,6 +134,78 @@ def _parse_external(
         pause_type="external_execution",
         external_result=result or None,
     )
+
+
+# --- Context extraction helpers ---
+
+
+def extract_row_action_context(payload: Dict[str, Any]) -> Optional[RowActionContext]:
+    # Extracts and validates context from row button click payloads
+    actions = payload.get("actions") or []
+    if not actions:
+        return None
+    button_value = actions[0].get("value") or ""
+    if "|" not in button_value:
+        return None
+    req_id, run_id, awaiting_ts = decode_row_button_value(button_value)
+
+    channel = (payload.get("channel") or {}).get("id")
+    message = payload.get("message") or {}
+    card_ts = message.get("ts")
+    if not channel or not card_ts:
+        return None
+
+    return RowActionContext(
+        req_id=req_id,
+        run_id=run_id,
+        awaiting_ts=awaiting_ts,
+        channel=channel,
+        card_ts=card_ts,
+        blocks=list(message.get("blocks") or []),
+    )
+
+
+def confirmation_row_summary(blocks: List[Dict[str, Any]]) -> ConfirmationRowSummary:
+    # Scans blocks to find pending confirmation rows and global submit button
+    pending_ids: set[str] = set()
+    has_global_submit = False
+    for block in blocks:
+        block_id = block.get("block_id", "")
+        block_type = block.get("type", "")
+        # Global submit button lives in an actions block with pause: prefix
+        if block_type == "actions" and block_id.startswith("pause:"):
+            has_global_submit = True
+        # Fresh confirmation row not yet decided
+        if block_id.startswith("rowact:") and ":confirmation" in block_id:
+            if ":selected:" not in block_id and ":decided:" not in block_id:
+                parts = block_id.split(":")
+                if len(parts) >= 2:
+                    pending_ids.add(parts[1])
+        # Decision marker removes from pending
+        if block_id.startswith("row:") and ":confirmation:decided:" in block_id:
+            parts = block_id.split(":")
+            if len(parts) >= 2:
+                pending_ids.discard(parts[1])
+    return ConfirmationRowSummary(pending_ids=pending_ids, has_global_submit=has_global_submit)
+
+
+def synthetic_submit_payload(
+    payload: Dict[str, Any],
+    run_id: str,
+    awaiting_ts: Optional[str],
+    blocks: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    # Builds synthetic submit payload for auto-submit after all rows decided
+    synthetic = dict(payload)
+    synthetic["actions"] = [
+        {
+            "action_id": "submit_pause",
+            "block_id": f"pause:{run_id}",
+            "value": encode_submit_button_value(run_id, awaiting_ts),
+        }
+    ]
+    synthetic["message"] = {**(payload.get("message") or {}), "blocks": blocks}
+    return synthetic
 
 
 # --- Public API ---
