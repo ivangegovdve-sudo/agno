@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, get_args
+from typing import Any, Dict, List, Optional, Tuple, get_args
 
 from slack_sdk.models.blocks import (
     CheckboxesElement,
@@ -80,6 +80,15 @@ def render_arg_value(value: Any) -> str:
         return str(value)
 
 
+# Builds a dropdown element from (display_text, value) pairs
+def _build_select_element(name: str, options: List[Tuple[str, str]]) -> StaticSelectElement:
+    return StaticSelectElement(
+        action_id=f"{ACTION_INPUT_FIELD_PREFIX}{name}",
+        placeholder=PlainTextObject(text="Select"),
+        options=[Option(text=PlainTextObject(text=text), value=value) for text, value in options],
+    )
+
+
 # Converts a Pydantic field schema into a Slack Block Kit input element for HITL user_input cards
 def _build_input_field(req_id: str, ui_field: Any) -> InputBlock:
     name = getattr(ui_field, "name", "field")
@@ -90,35 +99,18 @@ def _build_input_field(req_id: str, ui_field: Any) -> InputBlock:
     type_name = field_type.__name__ if isinstance(field_type, type) else str(field_type)
     element: Any = None
 
-    # Check for typing.Literal — renders as dropdown with literal values as options
+    # Literal["a", "b", "c"] → dropdown
     literal_args = get_args(field_type) if str(field_type).startswith("typing.Literal") else None
     if literal_args:
-        options = [Option(text=PlainTextObject(text=str(arg)), value=str(arg)) for arg in literal_args]
-        element = StaticSelectElement(
-            action_id=f"{ACTION_INPUT_FIELD_PREFIX}{name}",
-            placeholder=PlainTextObject(text="Select"),
-            options=options,
-        )
+        element = _build_select_element(name, [(str(arg), str(arg)) for arg in literal_args])
 
-    # Check for Enum subclass — renders as dropdown with enum members as options
+    # Enum → dropdown with member names
     elif isinstance(field_type, type) and issubclass(field_type, Enum):
-        options = [Option(text=PlainTextObject(text=member.name), value=member.name) for member in field_type]
-        element = StaticSelectElement(
-            action_id=f"{ACTION_INPUT_FIELD_PREFIX}{name}",
-            placeholder=PlainTextObject(text="Select"),
-            options=options,
-        )
+        element = _build_select_element(name, [(m.name, m.name) for m in field_type])
 
-    # Bool renders as dropdown (True/False)
+    # bool → dropdown (True/False)
     elif type_name == "bool":
-        element = StaticSelectElement(
-            action_id=f"{ACTION_INPUT_FIELD_PREFIX}{name}",
-            placeholder=PlainTextObject(text="Select"),
-            options=[
-                Option(text=PlainTextObject(text="True"), value="true"),
-                Option(text=PlainTextObject(text="False"), value="false"),
-            ],
-        )
+        element = _build_select_element(name, [("True", "true"), ("False", "false")])
 
     if element is None:
         multiline = type_name in ("list", "dict")
