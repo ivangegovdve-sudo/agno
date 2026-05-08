@@ -461,14 +461,14 @@ class TestFormatDecisionTitle:
         assert "\n" not in result
 
 
-# -- build_confirmation_toggle_card --
+# -- _build_confirmation_toggle_card --
 
 
 class TestBuildConfirmationToggleCard:
     def test_approve_selected_has_primary_style(self):
-        from agno.os.interfaces.slack.builders import build_confirmation_toggle_card
+        from agno.os.interfaces.slack.builders import _build_confirmation_toggle_card
 
-        blocks = build_confirmation_toggle_card(
+        card = _build_confirmation_toggle_card(
             req_id="r1",
             run_id="A1",
             awaiting_ts="123.456",
@@ -476,16 +476,15 @@ class TestBuildConfirmationToggleCard:
             body_text="• path: `/tmp/x`",
             selected="approve",
         )
-        card = blocks[0]
         assert card.block_id == "rowact:r1:confirmation:selected:approve"
         approve_btn = card.actions[0]
         assert approve_btn.text.text == "Approved"
         assert approve_btn.style == "primary"
 
     def test_deny_selected_has_danger_style(self):
-        from agno.os.interfaces.slack.builders import build_confirmation_toggle_card
+        from agno.os.interfaces.slack.builders import _build_confirmation_toggle_card
 
-        blocks = build_confirmation_toggle_card(
+        card = _build_confirmation_toggle_card(
             req_id="r1",
             run_id="A1",
             awaiting_ts=None,
@@ -493,16 +492,15 @@ class TestBuildConfirmationToggleCard:
             body_text="• path: `/tmp/x`",
             selected="deny",
         )
-        card = blocks[0]
         assert card.block_id == "rowact:r1:confirmation:selected:deny"
         deny_btn = card.actions[1]
         assert deny_btn.text.text == "Denied"
         assert deny_btn.style == "danger"
 
     def test_preserves_tool_name_and_body(self):
-        from agno.os.interfaces.slack.builders import build_confirmation_toggle_card
+        from agno.os.interfaces.slack.builders import _build_confirmation_toggle_card
 
-        blocks = build_confirmation_toggle_card(
+        card = _build_confirmation_toggle_card(
             req_id="r1",
             run_id="A1",
             awaiting_ts=None,
@@ -510,7 +508,6 @@ class TestBuildConfirmationToggleCard:
             body_text="• customer_id: `C-42`",
             selected="approve",
         )
-        card = blocks[0]
         assert card.title.text == "*cancel_subscription*"
         assert card.body.text == "• customer_id: `C-42`"
 

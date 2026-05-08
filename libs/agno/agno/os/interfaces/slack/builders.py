@@ -199,55 +199,37 @@ def _build_confirmation_card(
     )
 
 
-def build_confirmation_toggle_card(
+# Confirmation card with toggle state — selected button gets styled + past tense label
+def _build_confirmation_toggle_card(
     req_id: str,
     run_id: str,
     awaiting_ts: Optional[str],
     tool_name: str,
     body_text: str,
     selected: str,
-) -> List[Any]:
-    """Build a confirmation card with toggle state (Approve or Deny selected).
-
-    When one button is selected, it gets styled + checkmark; the other is unstyled but clickable.
-    """
+) -> Card:
     button_value = encode_row_button_value(req_id, run_id, awaiting_ts)
+    is_approved = selected == "approve"
 
-    if selected == "approve":
-        approve_btn = ButtonElement(
-            action_id=ACTION_ROW_APPROVE,
-            text=PlainTextObject(text="Approved", emoji=True),
-            style="primary",
-            value=button_value,
-        )
-        deny_btn = ButtonElement(
-            action_id=ACTION_ROW_REJECT,
-            text=PlainTextObject(text="Deny", emoji=True),
-            value=button_value,
-        )
-        block_id = f"rowact:{req_id}:confirmation:selected:approve"
-    else:
-        approve_btn = ButtonElement(
-            action_id=ACTION_ROW_APPROVE,
-            text=PlainTextObject(text="Approve", emoji=True),
-            value=button_value,
-        )
-        deny_btn = ButtonElement(
-            action_id=ACTION_ROW_REJECT,
-            text=PlainTextObject(text="Denied", emoji=True),
-            style="danger",
-            value=button_value,
-        )
-        block_id = f"rowact:{req_id}:confirmation:selected:deny"
+    approve_btn = ButtonElement(
+        action_id=ACTION_ROW_APPROVE,
+        text=PlainTextObject(text="Approved" if is_approved else "Approve", emoji=True),
+        style="primary" if is_approved else None,
+        value=button_value,
+    )
+    deny_btn = ButtonElement(
+        action_id=ACTION_ROW_REJECT,
+        text=PlainTextObject(text="Denied" if not is_approved else "Deny", emoji=True),
+        style="danger" if not is_approved else None,
+        value=button_value,
+    )
 
-    return [
-        Card(
-            block_id=block_id,
-            title=MarkdownTextObject(text=f"*{tool_name}*"),
-            body=MarkdownTextObject(text=body_text),
-            actions=[approve_btn, deny_btn],
-        ),
-    ]
+    return Card(
+        block_id=f"rowact:{req_id}:confirmation:selected:{selected}",
+        title=MarkdownTextObject(text=f"*{tool_name}*"),
+        body=MarkdownTextObject(text=body_text),
+        actions=[approve_btn, deny_btn],
+    )
 
 
 def build_rejection_input_card(
