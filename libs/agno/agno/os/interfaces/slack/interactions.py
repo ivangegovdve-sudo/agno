@@ -22,16 +22,23 @@ from agno.os.interfaces.slack.types import (
 )
 from agno.run.requirement import RunRequirement
 
-# Slack task card title truncation — longer titles wrap awkwardly in the plan block
-DECISION_TITLE_MAX = 120
-# Slack Card body renders poorly with long values; keeps single-line args readable
-DECISION_VALUE_MAX = 40
+DECISION_TITLE_MAX = 120  # Longer titles wrap awkwardly in Slack plan block
+DECISION_VALUE_MAX = 40  # Card body renders poorly with long values
+
+
+# --- Slack state helpers ---
 
 
 def _get_action_state(state: SlackState, block_id: str, action_id: str) -> Dict[str, Any]:
     return state.get(block_id, {}).get(action_id, {})
 
 
+# --- Pause type parsers ---
+# Each parser extracts user decisions from Slack payload for one pause_type.
+# Returns ParsedDecision with the resolved values; appends ParseError for validation failures.
+
+
+# Parses Approve/Deny toggle state from block_id + optional rejection reason from InputBlock
 def _parse_confirmation(
     requirement: RunRequirement,
     blocks: SlackBlocks,
@@ -71,70 +78,60 @@ def _parse_confirmation(
     )
 
 
+def _extract_field_value(action_state: Dict[str, Any]) -> Optional[str]:
+    # Slack nests static_select under selected_option; text inputs use value directly
+    if action_state.get("type") == "static_select":
+        return (action_state.get("selected_option") or {}).get("value")
+    return action_state.get("value")
+
+
+# Parses text/dropdown fields from user_input_schema
 def _parse_user_input(
-    requirement: RunRequirement,
-    state: SlackState,
-    errors: List[ParseError],
+    requirement: RunRequirement, state: SlackState, errors: List[ParseError]
 ) -> ParsedDecision:
     req_id = requirement.id or ""
-    row_prefix = row_block_id(req_id, "user_input")
+    prefix = row_block_id(req_id, "user_input")
     values: Dict[str, Any] = {}
 
     for field in requirement.user_input_schema or []:
-        block_id = f"{row_prefix}:{field.name}"
-        action_id = f"{ACTION_INPUT_FIELD_PREFIX}{field.name}"
-        action_state = _get_action_state(state, block_id, action_id)
-        # Slack nests static_select values under selected_option; text inputs use value directly
-        if action_state.get("type") == "static_select":
-            value = (action_state.get("selected_option") or {}).get("value")
-        else:
-            value = action_state.get("value")
-
-        values[field.name] = value
-        if value is None:
+        action_state = _get_action_state(state, f"{prefix}:{field.name}", f"{ACTION_INPUT_FIELD_PREFIX}{field.name}")
+        values[field.name] = _extract_field_value(action_state)
+        if values[field.name] is None:
             errors.append(ParseError(requirement_id=req_id, field=field.name, message="This field is required"))
 
-    return ParsedDecision(
-        requirement_id=req_id,
-        pause_type="user_input",
-        input_values=values,
-    )
+    return ParsedDecision(requirement_id=req_id, pause_type="user_input", input_values=values)
 
 
+def _extract_feedback_picks(action_state: Dict[str, Any]) -> List[str]:
+    # Checkboxes return selected_options list; static_select returns single selected_option
+    etype = action_state.get("type")
+    if etype == "checkboxes":
+        return [opt["value"] for opt in action_state.get("selected_options", []) if opt.get("value")]
+    if etype == "static_select":
+        selected = action_state.get("selected_option") or {}
+        return [selected["value"]] if selected.get("value") else []
+    return []
+
+
+# Parses checkbox/dropdown selections from user_feedback_schema questions
 def _parse_user_feedback(
-    requirement: RunRequirement,
-    state: SlackState,
-    errors: List[ParseError],
+    requirement: RunRequirement, state: SlackState, errors: List[ParseError]
 ) -> ParsedDecision:
     req_id = requirement.id or ""
-    row_prefix = row_block_id(req_id, "user_feedback")
+    prefix = row_block_id(req_id, "user_feedback")
     selections: Dict[str, List[str]] = {}
 
-    for index, question in enumerate(requirement.user_feedback_schema or []):
-        block_id = f"{row_prefix}:q{index}"
-        action_id = f"{ACTION_FEEDBACK_SELECT}:{index}"
-        action_state = _get_action_state(state, block_id, action_id)
-        # Checkboxes return list of selected_options; static_select returns single selected_option
-        element_type = action_state.get("type")
-        if element_type == "checkboxes":
-            picked = [opt["value"] for opt in action_state.get("selected_options", []) if opt.get("value")]
-        elif element_type == "static_select":
-            selected = action_state.get("selected_option") or {}
-            picked = [selected["value"]] if selected.get("value") else []
-        else:
-            picked = []
-
+    for i, question in enumerate(requirement.user_feedback_schema or []):
+        action_state = _get_action_state(state, f"{prefix}:q{i}", f"{ACTION_FEEDBACK_SELECT}:{i}")
+        picked = _extract_feedback_picks(action_state)
         if not picked:
             errors.append(ParseError(requirement_id=req_id, field=question.question, message="No option selected"))
         selections[question.question] = picked
 
-    return ParsedDecision(
-        requirement_id=req_id,
-        pause_type="user_feedback",
-        feedback_selections=selections,
-    )
+    return ParsedDecision(requirement_id=req_id, pause_type="user_feedback", feedback_selections=selections)
 
 
+# Parses pasted execution result from external_execution text field
 def _parse_external(
     requirement: RunRequirement,
     state: SlackState,
@@ -155,6 +152,10 @@ def _parse_external(
     )
 
 
+# --- Public API ---
+
+
+# Entry point: routes each requirement to its pause_type parser
 def parse_submit_payload(
     payload: Dict[str, Any],
     requirements: List[RunRequirement],
@@ -179,8 +180,8 @@ def parse_submit_payload(
     return decisions, errors
 
 
+# Mutates RunRequirement objects with parsed decisions — agent polls these for resolution
 def apply_decisions(decisions: List[ParsedDecision], requirements: List[RunRequirement]) -> None:
-    # Mutate original RunRequirement objects — the agent holds refs to these and polls for resolution
     by_id = {r.id: r for r in requirements if r.id}
 
     for decision in decisions:
@@ -202,8 +203,8 @@ def apply_decisions(decisions: List[ParsedDecision], requirements: List[RunRequi
             requirement.set_external_execution_result(decision.external_result)
 
 
+# Formats "Approved: tool_name(args)" or "Denied: tool_name(args)" for resolved cards
 def format_decision_title(decision: ParsedDecision, requirement: RunRequirement) -> str:
-    # Only confirmation decisions have a meaningful approve/deny verb to display
     if decision.pause_type != "confirmation":
         raise ValueError("format_decision_title only supports confirmation decisions")
 
