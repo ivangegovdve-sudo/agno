@@ -166,27 +166,25 @@ def parse_submit_payload(
     return decisions, errors
 
 
-# Mutates RunRequirement objects with parsed decisions — agent polls these for resolution
+# Mutates RunRequirement objects — agent holds refs to these and polls for resolution
 def apply_decisions(decisions: List[ParsedDecision], requirements: List[RunRequirement]) -> None:
     by_id = {r.id: r for r in requirements if r.id}
 
-    for decision in decisions:
-        requirement = by_id.get(decision.requirement_id)
-        if requirement is None:
+    for d in decisions:
+        req = by_id.get(d.requirement_id)
+        if req is None:
             continue
 
-        if decision.pause_type == "confirmation":
-            if decision.approved is True:
-                requirement.confirm()
-            elif decision.approved is False:
-                requirement.reject(decision.rejected_note)
-            # approved=None means undecided — skip, validation error already recorded
-        elif decision.pause_type == "user_input" and decision.input_values is not None:
-            requirement.provide_user_input(decision.input_values)
-        elif decision.pause_type == "user_feedback" and decision.feedback_selections is not None:
-            requirement.provide_user_feedback(decision.feedback_selections)
-        elif decision.pause_type == "external_execution" and decision.external_result is not None:
-            requirement.set_external_execution_result(decision.external_result)
+        if d.pause_type == "confirmation" and d.approved is True:
+            req.confirm()
+        elif d.pause_type == "confirmation" and d.approved is False:
+            req.reject(d.rejected_note)
+        elif d.pause_type == "user_input" and d.input_values is not None:
+            req.provide_user_input(d.input_values)
+        elif d.pause_type == "user_feedback" and d.feedback_selections is not None:
+            req.provide_user_feedback(d.feedback_selections)
+        elif d.pause_type == "external_execution" and d.external_result is not None:
+            req.set_external_execution_result(d.external_result)
 
 
 # Formats "Approved: tool_name(args)" or "Denied: tool_name(args)" for resolved cards
