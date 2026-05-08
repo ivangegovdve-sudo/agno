@@ -467,11 +467,8 @@ def attach_routes(
         # bubble is the only reliable continuation path.
         from slack_sdk.web.async_client import AsyncWebClient
 
-        from agno.os.interfaces.slack.interactions import (
-            apply_decisions,
-            format_decision_title,
-            parse_submit_payload,
-        )
+        from agno.os.interfaces.slack.interactions import apply_decisions, parse_submit_payload
+        from agno.os.interfaces.slack.types import tool_args, tool_name, truncate
 
         actions = payload.get("actions") or []
         if not actions:
@@ -588,7 +585,12 @@ def attach_routes(
                 continue
             if decision.approved is True:
                 continue
-            title = format_decision_title(decision, req)
+            # Build "Denied: tool_name(args)" title inline
+            name = tool_name(req)
+            args_dict = tool_args(req)
+            arg_parts = [f"{k}={truncate(str(v), 40)}" for k, v in args_dict.items()]
+            args_str = ", ".join(arg_parts)
+            title = truncate(f"Denied: {name}({args_str})" if args_str else f"Denied: {name}", 120)
             decision_chunk = {
                 "type": "task_update",
                 "id": f"approval:{decision.requirement_id}",

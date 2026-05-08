@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, List, Optional
 
 from agno.os.interfaces.slack.ids import (
@@ -21,14 +20,9 @@ from agno.os.interfaces.slack.types import (
     SlackState,
     extract_feedback_picks,
     extract_field_value,
-    tool_args,
     tool_name,
-    truncate,
 )
 from agno.run.requirement import RunRequirement
-
-DECISION_TITLE_MAX = 120  # Longer titles wrap awkwardly in Slack plan block
-DECISION_VALUE_MAX = 40  # Card body renders poorly with long values
 
 
 # --- Slack state helpers ---
@@ -185,26 +179,3 @@ def apply_decisions(decisions: List[ParsedDecision], requirements: List[RunRequi
             req.provide_user_feedback(d.feedback_selections)
         elif d.pause_type == "external_execution" and d.external_result is not None:
             req.set_external_execution_result(d.external_result)
-
-
-# Formats "Approved: tool_name(args)" or "Denied: tool_name(args)" for resolved cards
-def format_decision_title(decision: ParsedDecision, requirement: RunRequirement) -> str:
-    if decision.pause_type != "confirmation":
-        raise ValueError("format_decision_title only supports confirmation decisions")
-
-    verb = "Approved" if decision.approved else "Denied"
-    name = tool_name(requirement)
-    args_dict = tool_args(requirement)
-    arg_parts = []
-    for k, v in args_dict.items():
-        try:
-            rendered = v if isinstance(v, str) else json.dumps(v, default=str)
-        except (TypeError, ValueError):
-            rendered = str(v)
-        # Collapse newlines so multi-line JSON renders as single-line in the card header
-        rendered = truncate(rendered.replace("\n", " ").strip(), DECISION_VALUE_MAX)
-        arg_parts.append(f"{k}={rendered}")
-    args = ", ".join(arg_parts)
-    title = f"{verb}: {name}({args})" if args else f"{verb}: {name}"
-    # Slack plan block wraps awkwardly on long titles; truncate to keep it single-line
-    return truncate(title, DECISION_TITLE_MAX)
