@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, get_args
 
 from slack_sdk.models.blocks import (
+    ActionsBlock,
     CheckboxesElement,
     ContextBlock,
     DividerBlock,
@@ -16,17 +17,19 @@ from slack_sdk.models.blocks.basic_components import MarkdownTextObject, Option,
 from slack_sdk.models.blocks.block_elements import ButtonElement
 
 from agno.os.interfaces.slack.components import Card
-from agno.os.interfaces.slack.types import (
+from agno.os.interfaces.slack.ids import (
     ACTION_EXTERNAL_RESULT,
     ACTION_FEEDBACK_SELECT,
     ACTION_INPUT_FIELD_PREFIX,
     ACTION_ROW_APPROVE,
     ACTION_ROW_REJECT,
-    _tool_args,
-    _tool_name,
+    ACTION_SUBMIT,
     encode_row_button_value,
+    encode_submit_button_value,
+    pause_block_id,
     row_block_id,
 )
+from agno.os.interfaces.slack.types import _tool_args, _tool_name
 from agno.run.requirement import RunRequirement
 from agno.utils.serialize import json_serializer
 
@@ -164,9 +167,7 @@ def _build_user_feedback_question_block(req_id: str, question: Any, q_index: int
 
 
 # Builds HITL confirmation card with Approve/Deny buttons for a tool execution
-def _build_confirmation_card(
-    requirement: RunRequirement, run_id: str = "", awaiting_ts: Optional[str] = None
-) -> Card:
+def _build_confirmation_card(requirement: RunRequirement, run_id: str = "", awaiting_ts: Optional[str] = None) -> Card:
     req_id = requirement.id or ""
     name = _tool_name(requirement)
     args = _tool_args(requirement)
@@ -228,40 +229,7 @@ def _build_confirmation_toggle_card(
     )
 
 
-def build_original_row_card(
-    req_id: str,
-    run_id: str,
-    awaiting_ts: Optional[str],
-    original_title: str,
-    original_body: str,
-    pause_type: str = "confirmation",
-) -> List[Any]:
-    # Rebuild the Approve/Deny card from stored title/body (used by Cancel button)
-    # Input fields for user_input/feedback/external are NOT restored — just the header card
-    button_value = encode_row_button_value(req_id, run_id, awaiting_ts)
-    return [
-        Card(
-            block_id=f"rowact:{req_id}:{pause_type}",
-            title=MarkdownTextObject(text=original_title),
-            body=MarkdownTextObject(text=original_body),
-            actions=[
-                ButtonElement(
-                    action_id=ACTION_ROW_APPROVE,
-                    text=PlainTextObject(text="Approve", emoji=True),
-                    style="primary",
-                    value=button_value,
-                ),
-                ButtonElement(
-                    action_id=ACTION_ROW_REJECT,
-                    text=PlainTextObject(text="Deny", emoji=True),
-                    style="danger",
-                    value=button_value,
-                ),
-            ],
-        ),
-    ]
-
-
+# Builds InputBlocks for user_input pause type (text fields, dropdowns for bool/Enum/Literal)
 def _build_input_row(requirement: RunRequirement) -> List[Any]:
     req_id = requirement.id or ""
     blocks: List[Any] = []
@@ -271,6 +239,7 @@ def _build_input_row(requirement: RunRequirement) -> List[Any]:
     return blocks
 
 
+# Builds InputBlocks for user_feedback pause type (multiple-choice questions)
 def _build_feedback_row(requirement: RunRequirement) -> List[Any]:
     req_id = requirement.id or ""
     blocks: List[Any] = []
@@ -280,6 +249,7 @@ def _build_feedback_row(requirement: RunRequirement) -> List[Any]:
     return blocks
 
 
+# Builds InputBlock for external_execution pause type (paste execution result here)
 def _build_external_row(requirement: RunRequirement) -> List[Any]:
     req_id = requirement.id or ""
     return [
@@ -300,10 +270,6 @@ def build_pause_message(
     requirements: List[RunRequirement],
     awaiting_ts: Optional[str] = None,
 ) -> List[Any]:
-    from slack_sdk.models.blocks import ActionsBlock
-
-    from agno.os.interfaces.slack.types import ACTION_SUBMIT, encode_submit_button_value, pause_block_id
-
     blocks: List[Any] = []
     processed = 0
     truncated_count = 0
@@ -366,8 +332,48 @@ def build_pause_message(
     return blocks
 
 
-def approval_task_id(req_id: str) -> str:
-    return f"approval:{req_id}"
+# --- response_blocks helpers ---
+
+
+def _should_skip_block(btype: str, block_id: str) -> bool:
+    if btype == "actions":
+        return True
+    if btype == "section" and ":confirmation:decided:" in block_id:
+        return True
+    if block_id.startswith("reject_reason:"):
+        return True
+    return False
+
+
+def _finalize_card(block: Dict[str, Any]) -> Dict[str, Any]:
+    card = {k: v for k, v in block.items() if k != "actions"}
+    block_id = block.get("block_id", "")
+    title_text = (card.get("title") or {}).get("text", "")
+
+    if ":selected:approve" in block_id:
+        card["title"] = {"type": "mrkdwn", "text": f"*Approved:* {title_text.replace('*', '')}"}
+    elif ":selected:deny" in block_id:
+        card["title"] = {"type": "mrkdwn", "text": f"*Denied:* {title_text.replace('*', '')}"}
+
+    return card
+
+
+def _extract_input_value(element: Dict[str, Any], submitted: Dict[str, Any]) -> str:
+    etype = element.get("type")
+
+    if etype == "plain_text_input":
+        return submitted.get("value") or "_(empty)_"
+
+    if etype == "static_select":
+        opt = submitted.get("selected_option") or {}
+        return (opt.get("text") or {}).get("text") or opt.get("value") or "_(none)_"
+
+    if etype in ("checkboxes", "multi_static_select"):
+        opts = submitted.get("selected_options") or []
+        labels = [((o.get("text") or {}).get("text") or o.get("value") or "") for o in opts]
+        return ", ".join(labels) if labels else "_(none)_"
+
+    return "_(submitted)_"
 
 
 # Replaces interactive form with readonly summary so users see what was submitted
@@ -383,68 +389,34 @@ def response_blocks(
         btype = block.get("type")
         block_id = block.get("block_id", "")
 
-        # Actions block contains Submit button which is no longer relevant
-        if btype == "actions":
+        if _should_skip_block(btype, block_id):
             continue
 
-        # Decision marker sections — already rendered inline, skip
-        if btype == "section" and ":confirmation:decided:" in block_id:
-            continue
-
-        # Skip rejection reason inputs — they're part of confirmation, not submission
-        if block_id.startswith("reject_reason:"):
-            continue
-
-        # Keep card but strip actions (body shows tool args, Submitted card shows input values)
         if btype == "card":
-            card_copy = {k: v for k, v in block.items() if k != "actions"}
-            if ":selected:approve" in block_id:
-                title = (card_copy.get("title") or {}).get("text", "")
-                card_copy["title"] = {"type": "mrkdwn", "text": f"*Approved:* {title.replace('*', '')}"}
-            elif ":selected:deny" in block_id:
-                title = (card_copy.get("title") or {}).get("text", "")
-                card_copy["title"] = {"type": "mrkdwn", "text": f"*Denied:* {title.replace('*', '')}"}
-            preserved.append(card_copy)
+            preserved.append(_finalize_card(block))
             continue
 
         if btype != "input":
             preserved.append(block)
             continue
 
+        # Extract submitted value from input block
         label = (block.get("label") or {}).get("text", "")
         element = block.get("element") or {}
         action_id = element.get("action_id", "")
-        etype = element.get("type")
-
         submitted = (state_values.get(block_id) or {}).get(action_id) or {}
-
-        if etype == "plain_text_input":
-            value = submitted.get("value") or "_(empty)_"
-        elif etype == "static_select":
-            opt = submitted.get("selected_option") or {}
-            value = (opt.get("text") or {}).get("text") or opt.get("value") or "_(none)_"
-        elif etype in ("checkboxes", "multi_static_select"):
-            opts = submitted.get("selected_options") or []
-            labels = [((o.get("text") or {}).get("text") or o.get("value") or "") for o in opts]
-            value = ", ".join(labels) if labels else "_(none)_"
-        else:
-            value = "_(submitted)_"
-
+        value = _extract_input_value(element, submitted)
         submissions.append(f"• {label}: `{value}`")
 
-    # Only show Submitted card if there are input values (confirmation decisions are in their own cards)
     if not submissions:
         return preserved
 
     body_text = "\n".join(submissions)
-    # Slack card body limit is 200 chars
     if len(body_text) > 200:
         body_text = body_text[:197] + "..."
 
-    submission_card: Dict[str, Any] = {
+    return preserved + [{
         "type": "card",
         "title": {"type": "mrkdwn", "text": "*Submitted*"},
         "body": {"type": "mrkdwn", "text": body_text},
-    }
-
-    return preserved + [submission_card]
+    }]

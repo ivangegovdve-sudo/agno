@@ -3,18 +3,18 @@ from typing import Any, Dict
 from agno.models.response import ToolExecution
 from agno.os.interfaces.slack.builders import build_pause_message
 from agno.os.interfaces.slack.interactions import format_decision_title, parse_submit_payload
-from agno.os.interfaces.slack.types import (
+from agno.os.interfaces.slack.ids import (
     ACTION_EXTERNAL_RESULT,
     ACTION_FEEDBACK_SELECT,
     ACTION_INPUT_FIELD_PREFIX,
     ACTION_ROW_APPROVE,
     ACTION_ROW_REJECT,
     ACTION_SUBMIT,
-    ParsedDecision,
     parse_row_block_id,
     pause_block_id,
     row_block_id,
 )
+from agno.os.interfaces.slack.types import ParsedDecision
 from agno.run.requirement import RunRequirement, UserFeedbackQuestion
 from agno.tools.function import UserFeedbackOption, UserInputField
 
@@ -510,54 +510,6 @@ class TestBuildConfirmationToggleCard:
         )
         assert card.title.text == "*cancel_subscription*"
         assert card.body.text == "• customer_id: `C-42`"
-
-
-# -- build_original_row_card --
-
-
-class TestBuildOriginalRowCard:
-    def test_restores_approve_deny_buttons(self):
-        from agno.os.interfaces.slack.builders import build_original_row_card
-
-        blocks = build_original_row_card(
-            req_id="r1",
-            run_id="A1",
-            awaiting_ts="123.456",
-            original_title="*delete_file*",
-            original_body="• path: `/tmp/x`",
-        )
-        card = blocks[0]
-        assert card.block_id == "rowact:r1:confirmation"
-        assert len(card.actions) == 2
-        assert card.actions[0].action_id == ACTION_ROW_APPROVE
-        assert card.actions[1].action_id == ACTION_ROW_REJECT
-
-    def test_preserves_title_and_body(self):
-        from agno.os.interfaces.slack.builders import build_original_row_card
-
-        blocks = build_original_row_card(
-            req_id="r1",
-            run_id="A1",
-            awaiting_ts=None,
-            original_title="*cancel_subscription*",
-            original_body="• customer_id: `C-42`",
-        )
-        card = blocks[0]
-        assert card.title.text == "*cancel_subscription*"
-        assert card.body.text == "• customer_id: `C-42`"
-
-    def test_button_values_encode_routing_info(self):
-        from agno.os.interfaces.slack.builders import build_original_row_card
-
-        blocks = build_original_row_card(
-            req_id="r1",
-            run_id="A1",
-            awaiting_ts="123.456",
-            original_title="t",
-            original_body="b",
-        )
-        card = blocks[0]
-        assert card.actions[0].value == "r1|A1|123.456"
 
 
 # -- response_blocks --

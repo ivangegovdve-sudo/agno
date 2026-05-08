@@ -3,18 +3,20 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Dict, List, Optional, Type
 
-from agno.os.interfaces.slack.types import (
+from agno.os.interfaces.slack.ids import (
     ACTION_EXTERNAL_RESULT,
     ACTION_FEEDBACK_SELECT,
     ACTION_INPUT_FIELD_PREFIX,
     ACTION_REJECT_REASON,
+    parse_row_block_id,
+    row_block_id,
+)
+from agno.os.interfaces.slack.types import (
     ParsedDecision,
     ParseError,
     _tool_args,
     _tool_name,
     _truncate,
-    parse_row_block_id,
-    row_block_id,
 )
 from agno.run.requirement import RunRequirement
 
