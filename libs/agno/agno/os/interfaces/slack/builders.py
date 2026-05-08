@@ -485,7 +485,7 @@ def response_blocks(
     submissions: List[str] = []
 
     for block in original_blocks:
-        btype = block.get("type")
+        btype = block.get("type", "")
         block_id = block.get("block_id", "")
 
         if _should_skip_block(btype, block_id):
@@ -514,8 +514,10 @@ def response_blocks(
     if len(body_text) > 200:
         body_text = body_text[:197] + "..."
 
-    return preserved + [{
-        "type": "card",
-        "title": {"type": "mrkdwn", "text": "*Submitted*"},
-        "body": {"type": "mrkdwn", "text": body_text},
-    }]
+    return preserved + [
+        {
+            "type": "card",
+            "title": {"type": "mrkdwn", "text": "*Submitted*"},
+            "body": {"type": "mrkdwn", "text": body_text},
+        }
+    ]

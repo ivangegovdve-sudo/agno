@@ -2,7 +2,6 @@ from typing import Any, Dict
 
 from agno.models.response import ToolExecution
 from agno.os.interfaces.slack.builders import build_pause_message
-from agno.os.interfaces.slack.interactions import format_decision_title, parse_submit_payload
 from agno.os.interfaces.slack.ids import (
     ACTION_EXTERNAL_RESULT,
     ACTION_FEEDBACK_SELECT,
@@ -14,6 +13,7 @@ from agno.os.interfaces.slack.ids import (
     pause_block_id,
     row_block_id,
 )
+from agno.os.interfaces.slack.interactions import format_decision_title, parse_submit_payload
 from agno.os.interfaces.slack.types import ParsedDecision
 from agno.run.requirement import RunRequirement, UserFeedbackQuestion
 from agno.tools.function import UserFeedbackOption, UserInputField

@@ -28,7 +28,6 @@ from agno.os.interfaces.slack.types import (
 )
 from agno.run.requirement import RunRequirement
 
-
 # --- Slack state helpers ---
 
 
@@ -80,9 +79,7 @@ def _parse_confirmation(
 
 
 # Parses text/dropdown fields from user_input_schema
-def _parse_user_input(
-    requirement: RunRequirement, state: SlackState, errors: List[ParseError]
-) -> ParsedDecision:
+def _parse_user_input(requirement: RunRequirement, state: SlackState, errors: List[ParseError]) -> ParsedDecision:
     req_id = requirement.id or ""
     values: Dict[str, Any] = {}
 
@@ -98,9 +95,7 @@ def _parse_user_input(
 
 
 # Parses checkbox/dropdown selections from user_feedback_schema questions
-def _parse_user_feedback(
-    requirement: RunRequirement, state: SlackState, errors: List[ParseError]
-) -> ParsedDecision:
+def _parse_user_feedback(requirement: RunRequirement, state: SlackState, errors: List[ParseError]) -> ParsedDecision:
     req_id = requirement.id or ""
     selections: Dict[str, List[str]] = {}
 
