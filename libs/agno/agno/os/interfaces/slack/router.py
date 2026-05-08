@@ -24,19 +24,10 @@ from agno.os.interfaces.slack.helpers import (
 )
 from agno.os.interfaces.slack.security import verify_slack_signature
 from agno.os.interfaces.slack.state import StreamState, TaskStatus
-from agno.os.interfaces.slack.ids import decode_row_button_value, decode_submit_button_value
-from agno.os.interfaces.slack.builders import (
-    append_submit_if_needed,
-    build_submit_button,
-    decision_marker,
-    select_confirmation_row,
-)
-from agno.os.interfaces.slack.interactions import (
-    confirmation_row_summary,
-    extract_row_action_context,
-    synthetic_submit_payload,
-)
-from agno.os.interfaces.slack.types import SubmitContext, block_to_dict
+from agno.os.interfaces.slack.ids import decode_submit_button_value
+from agno.os.interfaces.slack.builders import append_submit_if_needed, select_confirmation_row
+from agno.os.interfaces.slack.interactions import extract_row_action_context, synthetic_submit_payload
+from agno.os.interfaces.slack.types import SubmitContext
 from agno.team import RemoteTeam, Team
 from agno.tools.slack import SlackTools
 from agno.utils.log import log_error, log_info
@@ -237,7 +228,6 @@ def attach_routes(
         blocks: List[Dict[str, Any]],
         log_context: str,
     ) -> bool:
-        # Wraps chat_update with consistent error handling
         from slack_sdk.web.async_client import AsyncWebClient
 
         client = AsyncWebClient(token=slack_tools.token, ssl=ssl)
@@ -249,7 +239,6 @@ def attach_routes(
             return False
 
     def _extract_submit_context(payload: Dict[str, Any]) -> Optional[SubmitContext]:
-        # Extracts and validates context from submit button click payloads
         actions = payload.get("actions") or []
         if not actions:
             return None
@@ -281,7 +270,6 @@ def attach_routes(
         )
 
     async def _delete_awaiting_indicator(channel: str, awaiting_ts: Optional[str]) -> None:
-        # Silently deletes "Awaiting..." message, ignores message_not_found on retries
         if not awaiting_ts:
             return
         from slack_sdk.web.async_client import AsyncWebClient
@@ -294,7 +282,6 @@ def attach_routes(
                 log_error(f"[HITL] chat_delete (awaiting indicator) failed for ts={awaiting_ts}: {exc}")
 
     async def _load_active_requirements(ctx: SubmitContext) -> List[Any]:
-        # Fetches paused run's requirements, returns empty list on failure
         try:
             run_output = await entity.aget_run_output(run_id=ctx.run_id, session_id=ctx.session_id)  # type: ignore[union-attr]
         except Exception as exc:
@@ -303,7 +290,6 @@ def attach_routes(
         return list(getattr(run_output, "active_requirements", None) or []) if run_output else []
 
     async def _lock_submitted_form(ctx: SubmitContext, original_blocks: List[Dict[str, Any]], requirements: List[Any]) -> None:
-        # Converts interactive inputs/cards to readonly display after submit
         has_inputs = any(b.get("type") == "input" for b in original_blocks)
         has_interactive_cards = any(b.get("type") == "card" and b.get("actions") for b in original_blocks)
         if not has_inputs and not has_interactive_cards:
@@ -325,7 +311,6 @@ def attach_routes(
         payload: Dict[str, Any],
         requirements: List[Any],
     ) -> Optional[List[Any]]:
-        # Parses payload, posts ephemeral on errors, applies decisions. Returns decisions or None on error.
         from slack_sdk.web.async_client import AsyncWebClient
 
         from agno.os.interfaces.slack.interactions import apply_decisions, parse_submit_payload
@@ -340,7 +325,6 @@ def attach_routes(
         return decisions
 
     async def _emit_denied_decision_cards(stream: Any, decisions: List[Any], requirements: List[Any], run_id: str) -> None:
-        # Emits task cards for DENIED confirmations only (approved ones show via tool's call card)
         from agno.os.interfaces.slack.types import tool_args, tool_name, truncate
 
         requirements_by_id = {r.id: r for r in requirements if r.id}
@@ -368,7 +352,6 @@ def attach_routes(
         stream: Any,
         requirements: List[Any],
     ) -> StreamState:
-        # Streams the continuation, returns final state with paused_event if re-paused
         state = StreamState(entity_name=entity_name, entity_type=entity_type)
         try:
             # requirements= forwards user's confirmations into the resumed run
@@ -403,7 +386,6 @@ def attach_routes(
         stream: Any,
         state: StreamState,
     ) -> None:
-        # Handles stream finalization — posts new pause card if re-paused, otherwise stops stream
         from slack_sdk.web.async_client import AsyncWebClient
 
         client = AsyncWebClient(token=slack_tools.token, ssl=ssl)

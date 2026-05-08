@@ -52,7 +52,6 @@ def _parse_confirmation(
     state = state or {}
     decision = None
 
-    # Decision is encoded in block_id when user clicks Approve/Deny toggle
     for block in blocks:
         parsed = parse_row_block_id(block.get("block_id", ""))
         if parsed and parsed.get("req_id") == req_id and parsed.get("kind") == "confirmation":
@@ -65,7 +64,6 @@ def _parse_confirmation(
         errors.append(ParseError(requirement_id=req_id, field=name, message="Approval decision required"))
         return ParsedDecision(requirement_id=req_id, pause_type="confirmation", approved=None)
 
-    # Extract optional rejection reason from InputBlock state
     rejected_note = None
     if decision == "deny":
         reason_state = _get_action_state(state, reject_reason_block_id(req_id), ACTION_REJECT_REASON)
@@ -140,7 +138,6 @@ def _parse_external(
 
 
 def extract_row_action_context(payload: Dict[str, Any]) -> Optional[RowActionContext]:
-    # Extracts and validates context from row button click payloads
     actions = payload.get("actions") or []
     if not actions:
         return None
@@ -166,7 +163,6 @@ def extract_row_action_context(payload: Dict[str, Any]) -> Optional[RowActionCon
 
 
 def confirmation_row_summary(blocks: List[Dict[str, Any]]) -> ConfirmationRowSummary:
-    # Scans blocks to find pending confirmation rows and global submit button
     pending_ids: set[str] = set()
     has_global_submit = False
     for block in blocks:
@@ -195,7 +191,6 @@ def synthetic_submit_payload(
     awaiting_ts: Optional[str],
     blocks: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    # Builds synthetic submit payload for auto-submit after all rows decided
     synthetic = dict(payload)
     synthetic["actions"] = [
         {

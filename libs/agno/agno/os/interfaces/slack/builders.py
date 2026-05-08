@@ -28,13 +28,11 @@ from agno.os.interfaces.slack.ids import (
     external_result_block_id,
     feedback_action_id,
     pause_block_id,
-    row_block_id,
     user_feedback_block_id,
     user_input_action_id,
     user_input_block_id,
 )
 from agno.os.interfaces.slack.types import (
-    ConfirmationRowSummary,
     RowActionContext,
     RowTransformResult,
     block_to_dict,
@@ -244,7 +242,6 @@ def build_confirmation_toggle_card(
 
 
 def decision_marker(req_id: str, decision: str) -> Dict[str, Any]:
-    # Creates hidden section block that parse_submit_payload reads to know row decision
     return {
         "type": "section",
         "block_id": f"row:{req_id}:confirmation:decided:{decision}",
@@ -253,7 +250,6 @@ def decision_marker(req_id: str, decision: str) -> Dict[str, Any]:
 
 
 def build_submit_button(run_id: str, awaiting_ts: Optional[str]) -> Dict[str, Any]:
-    # Creates Submit actions block for confirmation-only cards
     submit_btn = ButtonElement(
         action_id="submit_pause",
         text=PlainTextObject(text="Submit", emoji=True),
@@ -268,7 +264,6 @@ def select_confirmation_row(
     selected: str,
     include_reason_input: bool = False,
 ) -> RowTransformResult:
-    # Transforms blocks: toggle clicked row to selected state, skip stale markers
     from agno.os.interfaces.slack.interactions import confirmation_row_summary
 
     updated: List[Dict[str, Any]] = []
@@ -314,7 +309,6 @@ def select_confirmation_row(
         updated.append(block)
 
     summary = confirmation_row_summary(updated)
-    # Auto-submit only for confirmation-only cards when all rows decided
     should_auto_submit = bool(ctx.run_id and not summary.pending_ids and not summary.has_global_submit)
     return RowTransformResult(blocks=updated, should_auto_submit=should_auto_submit)
 
@@ -324,7 +318,6 @@ def append_submit_if_needed(
     run_id: str,
     awaiting_ts: Optional[str],
 ) -> List[Dict[str, Any]]:
-    # Adds Submit button to confirmation-only cards when all rows decided
     from agno.os.interfaces.slack.interactions import confirmation_row_summary
 
     if not run_id:
