@@ -12,7 +12,7 @@ PauseType = Literal["confirmation", "user_input", "user_feedback", "external_exe
 
 @dataclass
 class RunRequirement:
-    # Tracks what's needed to resume a paused run (HITL flows)
+    """Requirement to complete a paused run (used in HITL flows)"""
 
     tool_execution: Optional[ToolExecution] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
