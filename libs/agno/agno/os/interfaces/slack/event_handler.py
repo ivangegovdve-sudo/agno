@@ -42,6 +42,7 @@ class EventContext:
     resolved_user_id: str = ""
     display_name: Optional[str] = None
     channel_name: Optional[str] = None
+    action_token: Optional[str] = None
 
 
 @dataclass
@@ -96,6 +97,7 @@ class SlackEventHandler:
             resolved_user_id=resolved_user_id,
             display_name=display_name,
             channel_name=channel_name,
+            action_token=raw_ctx.get("action_token"),
         )
 
     async def download_files(self, event: dict) -> tuple:
@@ -121,6 +123,7 @@ class SlackEventHandler:
                     "thread_id": ctx.thread_id,
                     "user": ctx.user,
                     "message_text": ctx.message_text,
+                    "action_token": ctx.action_token,
                 },
             ),
             "dependencies": {
@@ -186,8 +189,9 @@ class SlackEventHandler:
                     return
 
                 if response.status == "PAUSED":
-                    await self._handle_paused_non_streaming(ctx, response)
-                    return
+                    handled = await self._handle_paused_non_streaming(ctx, response)
+                    if handled:
+                        return
 
                 if hasattr(response, "reasoning_content") and response.reasoning_content:
                     rc = str(response.reasoning_content)
@@ -206,7 +210,7 @@ class SlackEventHandler:
         finally:
             await self.set_status(ctx, "")
 
-    async def _handle_paused_non_streaming(self, ctx: EventContext, response: Any) -> None:
+    async def _handle_paused_non_streaming(self, ctx: EventContext, response: Any) -> bool:
         from agno.os.interfaces.slack.pause import _PAUSE_LABELS, post_pause_card
         from agno.os.interfaces.slack.types import tool_name
 
@@ -215,7 +219,7 @@ class SlackEventHandler:
         run_id = getattr(response, "run_id", None)
 
         if not (run_id and requirements):
-            return
+            return False
 
         content = str(response.content) if response.content else ""
         if content:
@@ -239,6 +243,8 @@ class SlackEventHandler:
             await post_pause_card(client, response, ctx.channel_id, ctx.thread_id, awaiting_ts)
         except Exception as exc:
             log_error(f"[HITL] Non-streaming pause card failed: {exc}")
+
+        return True
 
     async def handle_streaming(self, data: dict) -> None:
         ctx = await self.resolve_context(data)
@@ -335,8 +341,9 @@ class SlackEventHandler:
                         await rotate_stream(content)
 
             if state.paused_event is not None:
-                await self._handle_paused_streaming(ctx, state, stream)
-                return
+                handled = await self._handle_paused_streaming(ctx, state, stream)
+                if handled:
+                    return
 
             final_status: TaskStatus = state.terminal_status or "complete"
             completion_chunks = state.resolve_all_pending(final_status) if state.task_cards else []
@@ -352,7 +359,7 @@ class SlackEventHandler:
         except Exception as e:
             await self._handle_streaming_error(ctx, state, stream, e)
 
-    async def _handle_paused_streaming(self, ctx: EventContext, state: StreamState, stream: Any) -> None:
+    async def _handle_paused_streaming(self, ctx: EventContext, state: StreamState, stream: Any) -> bool:
         from agno.os.interfaces.slack.pause import finalize_pause, post_pause_card
 
         client = self._client()
@@ -360,7 +367,7 @@ class SlackEventHandler:
         requirements = list(getattr(state.paused_event, "active_requirements", None) or [])
 
         if not (pause_run_id and requirements):
-            return
+            return False
 
         awaiting_ts = await finalize_pause(
             client=client,
@@ -375,6 +382,8 @@ class SlackEventHandler:
             await post_pause_card(client, state.paused_event, ctx.channel_id, ctx.thread_id, awaiting_ts)
         except Exception as exc:
             log_error(f"[HITL] Failed to post Card block (pause): {exc}")
+
+        return True
 
     async def _handle_streaming_error(
         self, ctx: EventContext, state: StreamState, stream: Any, error: Exception
