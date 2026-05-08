@@ -53,6 +53,33 @@ def pause_block_id(run_id: str) -> str:
     return f"{PAUSE_BLOCK_PREFIX}:{run_id}"
 
 
+def reject_reason_block_id(requirement_id: str) -> str:
+    return f"reject_reason:{requirement_id}"
+
+
+# --- Field-level block/action ID builders ---
+
+
+def user_input_block_id(requirement_id: str, field_name: str) -> str:
+    return f"{row_block_id(requirement_id, 'user_input')}:{field_name}"
+
+
+def user_input_action_id(field_name: str) -> str:
+    return f"{ACTION_INPUT_FIELD_PREFIX}{field_name}"
+
+
+def user_feedback_block_id(requirement_id: str, question_index: int) -> str:
+    return f"{row_block_id(requirement_id, 'user_feedback')}:q{question_index}"
+
+
+def feedback_action_id(question_index: int) -> str:
+    return f"{ACTION_FEEDBACK_SELECT}:{question_index}"
+
+
+def external_result_block_id(requirement_id: str) -> str:
+    return f"{row_block_id(requirement_id, 'external_execution')}:result"
+
+
 # --- Button value encoders/decoders ---
 # Pipe-delimited because Slack button values are opaque strings, not JSON — simpler to parse
 

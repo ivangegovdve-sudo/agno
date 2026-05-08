@@ -5,11 +5,14 @@ from typing import Any, Dict, List, Optional
 
 from agno.os.interfaces.slack.ids import (
     ACTION_EXTERNAL_RESULT,
-    ACTION_FEEDBACK_SELECT,
-    ACTION_INPUT_FIELD_PREFIX,
     ACTION_REJECT_REASON,
+    external_result_block_id,
+    feedback_action_id,
     parse_row_block_id,
-    row_block_id,
+    reject_reason_block_id,
+    user_feedback_block_id,
+    user_input_action_id,
+    user_input_block_id,
 )
 from agno.os.interfaces.slack.types import (
     ParsedDecision,
@@ -67,7 +70,7 @@ def _parse_confirmation(
     # Extract optional rejection reason from InputBlock state
     rejected_note = None
     if decision == "deny":
-        reason_state = _get_action_state(state, f"reject_reason:{req_id}", ACTION_REJECT_REASON)
+        reason_state = _get_action_state(state, reject_reason_block_id(req_id), ACTION_REJECT_REASON)
         reason_text = (reason_state.get("value") or "").strip()
         if reason_text:
             rejected_note = reason_text
@@ -85,11 +88,12 @@ def _parse_user_input(
     requirement: RunRequirement, state: SlackState, errors: List[ParseError]
 ) -> ParsedDecision:
     req_id = requirement.id or ""
-    prefix = row_block_id(req_id, "user_input")
     values: Dict[str, Any] = {}
 
     for field in requirement.user_input_schema or []:
-        action_state = _get_action_state(state, f"{prefix}:{field.name}", f"{ACTION_INPUT_FIELD_PREFIX}{field.name}")
+        action_state = _get_action_state(
+            state, user_input_block_id(req_id, field.name), user_input_action_id(field.name)
+        )
         values[field.name] = extract_field_value(action_state)
         if values[field.name] is None:
             errors.append(ParseError(requirement_id=req_id, field=field.name, message="This field is required"))
@@ -102,11 +106,10 @@ def _parse_user_feedback(
     requirement: RunRequirement, state: SlackState, errors: List[ParseError]
 ) -> ParsedDecision:
     req_id = requirement.id or ""
-    prefix = row_block_id(req_id, "user_feedback")
     selections: Dict[str, List[str]] = {}
 
     for i, question in enumerate(requirement.user_feedback_schema or []):
-        action_state = _get_action_state(state, f"{prefix}:q{i}", f"{ACTION_FEEDBACK_SELECT}:{i}")
+        action_state = _get_action_state(state, user_feedback_block_id(req_id, i), feedback_action_id(i))
         picked = extract_feedback_picks(action_state)
         if not picked:
             errors.append(ParseError(requirement_id=req_id, field=question.question, message="No option selected"))
@@ -122,8 +125,7 @@ def _parse_external(
     errors: List[ParseError],
 ) -> ParsedDecision:
     req_id = requirement.id or ""
-    block_id = f"{row_block_id(req_id, 'external_execution')}:result"
-    action_state = _get_action_state(state, block_id, ACTION_EXTERNAL_RESULT)
+    action_state = _get_action_state(state, external_result_block_id(req_id), ACTION_EXTERNAL_RESULT)
     result = (action_state.get("value") or "").strip()
 
     if not result:

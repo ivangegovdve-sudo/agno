@@ -19,15 +19,18 @@ from slack_sdk.models.blocks.block_elements import ButtonElement
 from agno.os.interfaces.slack.components import Card
 from agno.os.interfaces.slack.ids import (
     ACTION_EXTERNAL_RESULT,
-    ACTION_FEEDBACK_SELECT,
-    ACTION_INPUT_FIELD_PREFIX,
     ACTION_ROW_APPROVE,
     ACTION_ROW_REJECT,
     ACTION_SUBMIT,
     encode_row_button_value,
     encode_submit_button_value,
+    external_result_block_id,
+    feedback_action_id,
     pause_block_id,
     row_block_id,
+    user_feedback_block_id,
+    user_input_action_id,
+    user_input_block_id,
 )
 from agno.os.interfaces.slack.types import tool_args, tool_name
 from agno.run.requirement import RunRequirement
@@ -67,7 +70,7 @@ def _is_bool(field_type: Any) -> bool:
 
 def _build_select_element(name: str, options: List[Tuple[str, str]]) -> StaticSelectElement:
     return StaticSelectElement(
-        action_id=f"{ACTION_INPUT_FIELD_PREFIX}{name}",
+        action_id=user_input_action_id(name),
         placeholder=PlainTextObject(text="Select"),
         options=[Option(text=PlainTextObject(text=text), value=value) for text, value in options],
     )
@@ -80,7 +83,7 @@ def _build_text_input(name: str, field_type: Any, initial_raw: Any) -> PlainText
     if initial_raw is not None:
         initial_value = initial_raw if isinstance(initial_raw, str) else json.dumps(initial_raw, default=str)
     return PlainTextInputElement(
-        action_id=f"{ACTION_INPUT_FIELD_PREFIX}{name}",
+        action_id=user_input_action_id(name),
         placeholder=PlainTextObject(text=f"Enter {name}"),
         initial_value=initial_value,
         multiline=multiline or None,
@@ -119,7 +122,7 @@ def _build_input_field(req_id: str, ui_field: Any) -> InputBlock:
     element = _field_type_to_input_element(name, field_type, initial_raw)
 
     return InputBlock(
-        block_id=f"{row_block_id(req_id, 'user_input')}:{name}",
+        block_id=user_input_block_id(req_id, name),
         label=PlainTextObject(text=name),
         element=element,
         hint=PlainTextObject(text=description) if description else None,
@@ -140,11 +143,11 @@ def _user_feedback_option_to_slack_option(option: Any, index: int) -> Option:
 def _feedback_question_to_input_element(slack_options: List[Option], multi_select: bool, q_index: int) -> Any:
     if multi_select:
         return CheckboxesElement(
-            action_id=f"{ACTION_FEEDBACK_SELECT}:{q_index}",
+            action_id=feedback_action_id(q_index),
             options=slack_options,
         )
     return StaticSelectElement(
-        action_id=f"{ACTION_FEEDBACK_SELECT}:{q_index}",
+        action_id=feedback_action_id(q_index),
         placeholder=PlainTextObject(text="Select one"),
         options=slack_options,
     )
@@ -160,7 +163,7 @@ def _build_user_feedback_question_block(req_id: str, question: Any, q_index: int
     element = _feedback_question_to_input_element(slack_options, multi_select, q_index)
 
     return InputBlock(
-        block_id=f"{row_block_id(req_id, 'user_feedback')}:q{q_index}",
+        block_id=user_feedback_block_id(req_id, q_index),
         label=PlainTextObject(text=prompt),
         element=element,
     )
@@ -254,7 +257,7 @@ def _build_external_row(requirement: RunRequirement) -> List[Any]:
     req_id = requirement.id or ""
     return [
         InputBlock(
-            block_id=f"{row_block_id(req_id, 'external_execution')}:result",
+            block_id=external_result_block_id(req_id),
             label=PlainTextObject(text="Result"),
             element=PlainTextInputElement(
                 action_id=ACTION_EXTERNAL_RESULT,
