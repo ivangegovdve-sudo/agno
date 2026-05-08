@@ -48,13 +48,65 @@ def render_arg_value(value: Any) -> str:
         return str(value)
 
 
-# Builds a dropdown element from (display_text, value) pairs
+# --- Type detection helpers ---
+
+
+def _is_literal(field_type: Any) -> bool:
+    return str(field_type).startswith("typing.Literal")
+
+
+def _is_enum(field_type: Any) -> bool:
+    return isinstance(field_type, type) and issubclass(field_type, Enum)
+
+
+def _is_bool(field_type: Any) -> bool:
+    return field_type is bool or (isinstance(field_type, type) and field_type.__name__ == "bool")
+
+
+# --- Element builders ---
+
+
 def _build_select_element(name: str, options: List[Tuple[str, str]]) -> StaticSelectElement:
     return StaticSelectElement(
         action_id=f"{ACTION_INPUT_FIELD_PREFIX}{name}",
         placeholder=PlainTextObject(text="Select"),
         options=[Option(text=PlainTextObject(text=text), value=value) for text, value in options],
     )
+
+
+def _build_text_input(name: str, field_type: Any, initial_raw: Any) -> PlainTextInputElement:
+    type_name = field_type.__name__ if isinstance(field_type, type) else str(field_type)
+    multiline = type_name in ("list", "dict")
+    initial_value: Optional[str] = None
+    if initial_raw is not None:
+        initial_value = initial_raw if isinstance(initial_raw, str) else json.dumps(initial_raw, default=str)
+    return PlainTextInputElement(
+        action_id=f"{ACTION_INPUT_FIELD_PREFIX}{name}",
+        placeholder=PlainTextObject(text=f"Enter {name}"),
+        initial_value=initial_value,
+        multiline=multiline or None,
+    )
+
+
+def _element_for_type(name: str, field_type: Any, initial_raw: Any) -> Any:
+    # Literal["a", "b"] → dropdown
+    if _is_literal(field_type):
+        args = get_args(field_type)
+        return _build_select_element(name, [(str(a), str(a)) for a in args])
+
+    # Enum → dropdown
+    if _is_enum(field_type):
+        return _build_select_element(name, [(m.name, m.name) for m in field_type])
+
+    # bool → dropdown (True/False)
+    if _is_bool(field_type):
+        return _build_select_element(name, [("True", "true"), ("False", "false")])
+
+    # Everything else → text input
+    return _build_text_input(name, field_type, initial_raw)
+
+
+# --- Main builder ---
 
 
 # Converts a Pydantic field schema into a Slack Block Kit input element for HITL user_input cards
@@ -64,33 +116,7 @@ def _build_input_field(req_id: str, ui_field: Any) -> InputBlock:
     field_type = getattr(ui_field, "field_type", str)
     initial_raw = getattr(ui_field, "value", None)
 
-    type_name = field_type.__name__ if isinstance(field_type, type) else str(field_type)
-    element: Any = None
-
-    # Literal["a", "b", "c"] → dropdown
-    literal_args = get_args(field_type) if str(field_type).startswith("typing.Literal") else None
-    if literal_args:
-        element = _build_select_element(name, [(str(arg), str(arg)) for arg in literal_args])
-
-    # Enum → dropdown with member names
-    elif isinstance(field_type, type) and issubclass(field_type, Enum):
-        element = _build_select_element(name, [(m.name, m.name) for m in field_type])
-
-    # bool → dropdown (True/False)
-    elif type_name == "bool":
-        element = _build_select_element(name, [("True", "true"), ("False", "false")])
-
-    if element is None:
-        multiline = type_name in ("list", "dict")
-        initial_value: Optional[str] = None
-        if initial_raw is not None:
-            initial_value = initial_raw if isinstance(initial_raw, str) else json.dumps(initial_raw, default=str)
-        element = PlainTextInputElement(
-            action_id=f"{ACTION_INPUT_FIELD_PREFIX}{name}",
-            placeholder=PlainTextObject(text=f"Enter {name}"),
-            initial_value=initial_value,
-            multiline=multiline or None,
-        )
+    element = _element_for_type(name, field_type, initial_raw)
 
     return InputBlock(
         block_id=f"{row_block_id(req_id, 'user_input')}:{name}",
