@@ -246,6 +246,66 @@ class SlackEventHandler:
 
         return True
 
+    async def _open_chat_stream(self, client: AsyncWebClient, ctx: EventContext) -> Any:
+        return await client.chat_stream(
+            channel=ctx.channel_id,
+            thread_ts=ctx.thread_id,
+            recipient_team_id=ctx.team_id,
+            recipient_user_id=ctx.user,
+            task_display_mode=self.task_display_mode,
+            buffer_size=self.buffer_size,
+        )
+
+    async def _set_thread_title(self, client: AsyncWebClient, ctx: EventContext, state: StreamState) -> None:
+        if state.title_set:
+            return
+        state.title_set = True
+        title = ctx.message_text[:50].strip() or "New conversation"
+        try:
+            await client.assistant_threads_setTitle(
+                channel_id=ctx.channel_id, thread_ts=ctx.thread_id, title=title
+            )
+        except Exception:
+            pass
+
+    async def _rotate_stream(
+        self, client: AsyncWebClient, ctx: EventContext, state: StreamState, stream: Any, pending_text: str = ""
+    ) -> Any:
+        in_progress = [(k, v.title) for k, v in state.task_cards.items() if v.status == "in_progress"]
+        rotate_stop: Dict[str, Any] = {}
+        if state.task_cards:
+            rotate_stop["chunks"] = state.resolve_all_pending("complete")
+        await stream.stop(**rotate_stop)
+
+        new_stream = await self._open_chat_stream(client, ctx)
+        state.task_cards.clear()
+        state.stream_chars_sent = 0
+
+        for key, card_title in in_progress:
+            state.track_task(key, card_title)
+            await new_stream.append(
+                markdown_text="",
+                chunks=[{"type": "task_update", "id": key, "title": card_title, "status": "in_progress"}],
+            )
+        if pending_text:
+            continued = "_(continued)_\n" + pending_text
+            await new_stream.append(markdown_text=continued)
+            state.stream_chars_sent = len(continued)
+
+        return new_stream
+
+    async def _finalize_stream(self, client: AsyncWebClient, ctx: EventContext, state: StreamState, stream: Any) -> None:
+        final_status: TaskStatus = state.terminal_status or "complete"
+        completion_chunks = state.resolve_all_pending(final_status) if state.task_cards else []
+        stop_kwargs: Dict[str, Any] = {}
+        if state.has_content():
+            stop_kwargs["markdown_text"] = state.flush()
+        if completion_chunks:
+            stop_kwargs["chunks"] = completion_chunks
+
+        await stream.stop(**stop_kwargs)
+        await upload_response_media_async(client, state, ctx.channel_id, ctx.thread_id)
+
     async def handle_streaming(self, data: dict) -> None:
         ctx = await self.resolve_context(data)
         if ctx is None:
@@ -259,57 +319,17 @@ class SlackEventHandler:
             await self.set_status(ctx, self.loading_text)
 
             files, images, videos, audio, skipped = await self.download_files(data["event"])
-
             message_text = ctx.message_text
             if skipped:
-                notice = "[Skipped files: " + ", ".join(skipped) + "]"
-                message_text = f"{notice}\n{message_text}"
+                message_text = f"[Skipped files: {', '.join(skipped)}]\n{message_text}"
 
             run_kwargs = self.build_run_kwargs(ctx, files, images, videos, audio, streaming=True)
             response_stream = self.entity.arun(message_text, **run_kwargs)  # type: ignore[union-attr]
-
             if response_stream is None:
                 await self.set_status(ctx, "")
                 return
 
-            stream = await client.chat_stream(
-                channel=ctx.channel_id,
-                thread_ts=ctx.thread_id,
-                recipient_team_id=ctx.team_id,
-                recipient_user_id=ctx.user,
-                task_display_mode=self.task_display_mode,
-                buffer_size=self.buffer_size,
-            )
-
-            async def rotate_stream(pending_text: str = "") -> None:
-                nonlocal stream
-                assert stream is not None
-                in_progress = [(k, v.title) for k, v in state.task_cards.items() if v.status == "in_progress"]
-                rotate_stop: Dict[str, Any] = {}
-                if state.task_cards:
-                    rotate_stop["chunks"] = state.resolve_all_pending("complete")
-                await stream.stop(**rotate_stop)
-                new_stream = await client.chat_stream(
-                    channel=ctx.channel_id,
-                    thread_ts=ctx.thread_id,
-                    recipient_team_id=ctx.team_id,
-                    recipient_user_id=ctx.user,
-                    task_display_mode=self.task_display_mode,
-                    buffer_size=self.buffer_size,
-                )
-                state.task_cards.clear()
-                state.stream_chars_sent = 0
-                stream = new_stream
-                for key, card_title in in_progress:
-                    state.track_task(key, card_title)
-                    await stream.append(
-                        markdown_text="",
-                        chunks=[{"type": "task_update", "id": key, "title": card_title, "status": "in_progress"}],
-                    )
-                if pending_text:
-                    continued = "_(continued)_\n" + pending_text
-                    await stream.append(markdown_text=continued)
-                    state.stream_chars_sent = len(continued)
+            stream = await self._open_chat_stream(client, ctx)
 
             async for chunk in response_stream:
                 state.collect_media(chunk)
@@ -319,42 +339,23 @@ class SlackEventHandler:
                     break
 
                 if len(state.task_cards) >= _STREAM_CARD_LIMIT:
-                    await rotate_stream(state.flush() if state.has_content() else "")
+                    stream = await self._rotate_stream(client, ctx, state, stream, state.flush() if state.has_content() else "")
 
                 if state.has_content():
-                    if not state.title_set:
-                        state.title_set = True
-                        title = ctx.message_text[:50].strip() or "New conversation"
-                        try:
-                            await client.assistant_threads_setTitle(
-                                channel_id=ctx.channel_id, thread_ts=ctx.thread_id, title=title
-                            )
-                        except Exception:
-                            pass
-
+                    await self._set_thread_title(client, ctx, state)
                     content = state.flush()
-                    content_len = len(content)
-                    if state.stream_chars_sent + content_len <= _STREAM_CHAR_LIMIT:
+                    if state.stream_chars_sent + len(content) <= _STREAM_CHAR_LIMIT:
                         await stream.append(markdown_text=content)
-                        state.stream_chars_sent += content_len
+                        state.stream_chars_sent += len(content)
                     else:
-                        await rotate_stream(content)
+                        stream = await self._rotate_stream(client, ctx, state, stream, content)
 
             if state.paused_event is not None:
                 handled = await self._handle_paused_streaming(ctx, state, stream)
                 if handled:
                     return
 
-            final_status: TaskStatus = state.terminal_status or "complete"
-            completion_chunks = state.resolve_all_pending(final_status) if state.task_cards else []
-            stop_kwargs: Dict[str, Any] = {}
-            if state.has_content():
-                stop_kwargs["markdown_text"] = state.flush()
-            if completion_chunks:
-                stop_kwargs["chunks"] = completion_chunks
-
-            await stream.stop(**stop_kwargs)
-            await upload_response_media_async(client, state, ctx.channel_id, ctx.thread_id)
+            await self._finalize_stream(client, ctx, state, stream)
 
         except Exception as e:
             await self._handle_streaming_error(ctx, state, stream, e)
