@@ -512,14 +512,14 @@ class TestBuildConfirmationToggleCard:
         assert card.body.text == "• customer_id: `C-42`"
 
 
-# -- build_rejection_input_card --
+# -- _build_rejection_input_card --
 
 
 class TestBuildRejectionInputCard:
     def test_card_has_confirm_and_cancel_buttons(self):
-        from agno.os.interfaces.slack.builders import build_rejection_input_card
+        from agno.os.interfaces.slack.builders import _build_rejection_input_card
 
-        blocks = build_rejection_input_card(
+        blocks = _build_rejection_input_card(
             req_id="r1",
             run_id="A1",
             awaiting_ts="123.456",
@@ -534,9 +534,9 @@ class TestBuildRejectionInputCard:
         assert card.actions[1].action_id == "reject_cancel"
 
     def test_includes_reason_input_block(self):
-        from agno.os.interfaces.slack.builders import build_rejection_input_card
+        from agno.os.interfaces.slack.builders import _build_rejection_input_card
 
-        blocks = build_rejection_input_card(
+        blocks = _build_rejection_input_card(
             req_id="r1",
             run_id="A1",
             awaiting_ts=None,
@@ -551,9 +551,9 @@ class TestBuildRejectionInputCard:
         assert reason_block.element.multiline is True
 
     def test_confirm_button_has_danger_style(self):
-        from agno.os.interfaces.slack.builders import build_rejection_input_card
+        from agno.os.interfaces.slack.builders import _build_rejection_input_card
 
-        blocks = build_rejection_input_card(
+        blocks = _build_rejection_input_card(
             req_id="r1",
             run_id="A1",
             awaiting_ts=None,

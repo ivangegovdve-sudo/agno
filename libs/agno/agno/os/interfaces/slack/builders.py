@@ -232,7 +232,8 @@ def _build_confirmation_toggle_card(
     )
 
 
-def build_rejection_input_card(
+# Builds rejection flow: Card with Confirm/Cancel buttons + reason input field
+def _build_rejection_input_card(
     req_id: str,
     run_id: str,
     awaiting_ts: Optional[str],
