@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, get_args
 
@@ -14,8 +13,9 @@ from slack_sdk.models.blocks import (
     StaticSelectElement,
 )
 from slack_sdk.models.blocks.basic_components import MarkdownTextObject, Option, PlainTextObject
-from slack_sdk.models.blocks.block_elements import ButtonElement, ImageElement
+from slack_sdk.models.blocks.block_elements import ButtonElement
 
+from agno.os.interfaces.slack.components import Card
 from agno.os.interfaces.slack.types import (
     ACTION_EXTERNAL_RESULT,
     ACTION_FEEDBACK_SELECT,
@@ -36,38 +36,6 @@ from agno.utils.serialize import json_serializer
 
 # Slack caps messages at 50 blocks
 MAX_MESSAGE_BLOCKS = 50
-
-
-@dataclass
-class Card:
-    # Card block shipped in Slack API 2024 but slack_sdk lacks model class
-    actions: List[ButtonElement]
-    icon: Optional[ImageElement] = None
-    title: Optional[PlainTextObject | MarkdownTextObject] = None
-    subtitle: Optional[PlainTextObject | MarkdownTextObject] = None
-    body: Optional[PlainTextObject | MarkdownTextObject] = None
-    block_id: Optional[str] = None
-
-    @property
-    def type(self) -> str:
-        return "card"
-
-    def to_dict(self) -> Dict[str, Any]:
-        result: Dict[str, Any] = {
-            "type": self.type,
-            "actions": [a.to_dict() for a in self.actions],
-        }
-        if self.icon:
-            result["icon"] = self.icon.to_dict()
-        if self.title:
-            result["title"] = self.title.to_dict()
-        if self.subtitle:
-            result["subtitle"] = self.subtitle.to_dict()
-        if self.body:
-            result["body"] = self.body.to_dict()
-        if self.block_id:
-            result["block_id"] = self.block_id
-        return result
 
 
 # Formats tool arg values for display in HITL approval cards; strings pass through, others JSON-encode
