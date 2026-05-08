@@ -70,6 +70,7 @@ class Card:
         return result
 
 
+# Formats tool arg values for display in HITL approval cards; strings pass through, others JSON-encode
 def render_arg_value(value: Any) -> str:
     if isinstance(value, str):
         return value
