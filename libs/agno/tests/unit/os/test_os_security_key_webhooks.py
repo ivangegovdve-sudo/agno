@@ -49,7 +49,7 @@ def agent_os_with_slack_and_key():
 
     with (
         patch("agno.os.interfaces.slack.router.SlackTools", return_value=mock_slack_tools),
-        patch("slack_sdk.web.async_client.AsyncWebClient", return_value=mock_async_web_client),
+        patch("agno.os.interfaces.slack.event_handler.AsyncWebClient", return_value=mock_async_web_client),
     ):
         agent_os = AgentOS(agents=[agent], interfaces=[slack], settings=settings, telemetry=False)
         app = agent_os.get_app()
@@ -140,7 +140,7 @@ def test_env_var_os_security_key_does_not_block_slack(monkeypatch):
 
     with (
         patch("agno.os.interfaces.slack.router.SlackTools", return_value=mock_slack_tools),
-        patch("slack_sdk.web.async_client.AsyncWebClient", return_value=mock_async_web_client),
+        patch("agno.os.interfaces.slack.event_handler.AsyncWebClient", return_value=mock_async_web_client),
     ):
         agent_os = AgentOS(agents=[agent], interfaces=[slack], telemetry=False)
         assert agent_os.settings.os_security_key == OS_KEY, "Env var should have been picked up by AgnoAPISettings"
