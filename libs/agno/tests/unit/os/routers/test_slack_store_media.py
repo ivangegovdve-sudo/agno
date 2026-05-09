@@ -99,7 +99,7 @@ async def test_non_streaming_store_media_false_uploads_media():
     with (
         patch("agno.os.interfaces.slack.router.verify_slack_signature", return_value=True),
         patch("agno.os.interfaces.slack.router.SlackTools", return_value=mock_slack),
-        patch("slack_sdk.web.async_client.AsyncWebClient", return_value=mock_client),
+        patch("agno.os.interfaces.slack.event_handler.AsyncWebClient", return_value=mock_client),
     ):
         app = build_app(agent_mock, reply_to_mentions_only=False)
         from fastapi.testclient import TestClient
@@ -150,8 +150,8 @@ async def test_non_streaming_store_media_false_response_has_images():
     with (
         patch("agno.os.interfaces.slack.router.verify_slack_signature", return_value=True),
         patch("agno.os.interfaces.slack.router.SlackTools", return_value=mock_slack),
-        patch("slack_sdk.web.async_client.AsyncWebClient", return_value=mock_client),
-        patch("agno.os.interfaces.slack.router.upload_response_media_async") as mock_upload,
+        patch("agno.os.interfaces.slack.event_handler.AsyncWebClient", return_value=mock_client),
+        patch("agno.os.interfaces.slack.event_handler.upload_response_media_async") as mock_upload,
     ):
         app = build_app(agent_mock, reply_to_mentions_only=False)
         from fastapi.testclient import TestClient
@@ -197,8 +197,8 @@ async def test_non_streaming_real_agent_store_media_false():
     with (
         patch("agno.os.interfaces.slack.router.verify_slack_signature", return_value=True),
         patch("agno.os.interfaces.slack.router.SlackTools", return_value=mock_slack),
-        patch("slack_sdk.web.async_client.AsyncWebClient", return_value=mock_client),
-        patch("agno.os.interfaces.slack.router.upload_response_media_async") as mock_upload,
+        patch("agno.os.interfaces.slack.event_handler.AsyncWebClient", return_value=mock_client),
+        patch("agno.os.interfaces.slack.event_handler.upload_response_media_async") as mock_upload,
     ):
         from agno.os.interfaces.slack.router import attach_routes
 
@@ -279,8 +279,8 @@ async def test_streaming_store_media_false_collects_media_from_completion():
     with (
         patch("agno.os.interfaces.slack.router.verify_slack_signature", return_value=True),
         patch("agno.os.interfaces.slack.router.SlackTools", return_value=mock_slack),
-        patch("slack_sdk.web.async_client.AsyncWebClient", return_value=mock_client),
-        patch("agno.os.interfaces.slack.router.upload_response_media_async") as mock_upload,
+        patch("agno.os.interfaces.slack.event_handler.AsyncWebClient", return_value=mock_client),
+        patch("agno.os.interfaces.slack.event_handler.upload_response_media_async") as mock_upload,
     ):
         app = build_app(agent, streaming=True, reply_to_mentions_only=False)
         from fastapi.testclient import TestClient
@@ -332,8 +332,8 @@ async def test_streaming_content_chunks_with_images_collected():
     with (
         patch("agno.os.interfaces.slack.router.verify_slack_signature", return_value=True),
         patch("agno.os.interfaces.slack.router.SlackTools", return_value=mock_slack),
-        patch("slack_sdk.web.async_client.AsyncWebClient", return_value=mock_client),
-        patch("agno.os.interfaces.slack.router.upload_response_media_async") as mock_upload,
+        patch("agno.os.interfaces.slack.event_handler.AsyncWebClient", return_value=mock_client),
+        patch("agno.os.interfaces.slack.event_handler.upload_response_media_async") as mock_upload,
     ):
         app = build_app(agent, streaming=True, reply_to_mentions_only=False)
         from fastapi.testclient import TestClient
@@ -365,8 +365,8 @@ async def test_streaming_real_agent_store_media_false():
     with (
         patch("agno.os.interfaces.slack.router.verify_slack_signature", return_value=True),
         patch("agno.os.interfaces.slack.router.SlackTools", return_value=mock_slack),
-        patch("slack_sdk.web.async_client.AsyncWebClient", return_value=mock_client),
-        patch("agno.os.interfaces.slack.router.upload_response_media_async") as mock_upload,
+        patch("agno.os.interfaces.slack.event_handler.AsyncWebClient", return_value=mock_client),
+        patch("agno.os.interfaces.slack.event_handler.upload_response_media_async") as mock_upload,
     ):
         from agno.os.interfaces.slack.router import attach_routes
 
@@ -412,8 +412,8 @@ async def test_non_streaming_store_media_true_still_uploads():
     with (
         patch("agno.os.interfaces.slack.router.verify_slack_signature", return_value=True),
         patch("agno.os.interfaces.slack.router.SlackTools", return_value=mock_slack),
-        patch("slack_sdk.web.async_client.AsyncWebClient", return_value=mock_client),
-        patch("agno.os.interfaces.slack.router.upload_response_media_async") as mock_upload,
+        patch("agno.os.interfaces.slack.event_handler.AsyncWebClient", return_value=mock_client),
+        patch("agno.os.interfaces.slack.event_handler.upload_response_media_async") as mock_upload,
     ):
         app = build_app(agent_mock, reply_to_mentions_only=False)
         from fastapi.testclient import TestClient
