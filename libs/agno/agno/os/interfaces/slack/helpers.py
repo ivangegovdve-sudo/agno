@@ -2,6 +2,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+from agno.media import Audio, File, Image, Video
+from agno.utils.log import log_error, log_warning
+
 
 def slack_error_code(exc: BaseException) -> Optional[str]:
     # Extracts Slack API error code from exception for logging/handling
@@ -12,10 +15,6 @@ def slack_error_code(exc: BaseException) -> Optional[str]:
         if isinstance(code, str):
             return code
     return None
-
-
-from agno.media import Audio, File, Image, Video
-from agno.utils.log import log_error, log_warning
 
 
 def task_id(agent_name: Optional[str], base_id: str) -> str:

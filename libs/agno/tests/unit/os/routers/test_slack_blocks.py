@@ -13,8 +13,7 @@ from agno.os.interfaces.slack.ids import (
     pause_block_id,
     row_block_id,
 )
-from agno.os.interfaces.slack.interactions import format_decision_title, parse_submit_payload
-from agno.os.interfaces.slack.types import ParsedDecision
+from agno.os.interfaces.slack.interactions import parse_submit_payload
 from agno.run.requirement import RunRequirement, UserFeedbackQuestion
 from agno.tools.function import UserFeedbackOption, UserInputField
 
@@ -288,7 +287,7 @@ class TestParseSubmitPayload:
         assert errors == []
         assert decisions[0].input_values == {"to_address": "you@example.com", "subject": "Q1 results"}
 
-    def test_user_input_bool_coerced(self):
+    def test_user_input_bool_value_returned_from_slack(self):
         req = _make_requirement(
             requires_user_input=True,
             user_input_schema=[UserInputField(name="force", field_type=bool)],
@@ -306,9 +305,9 @@ class TestParseSubmitPayload:
         )
         decisions, errors = parse_submit_payload(payload, [req])
         assert errors == []
-        assert decisions[0].input_values == {"force": True}
+        assert decisions[0].input_values == {"force": "true"}
 
-    def test_user_input_list_parsed_from_json(self):
+    def test_user_input_list_value_returned_from_slack(self):
         req = _make_requirement(
             requires_user_input=True,
             user_input_schema=[UserInputField(name="tags", field_type=list)],
@@ -323,9 +322,9 @@ class TestParseSubmitPayload:
         )
         decisions, errors = parse_submit_payload(payload, [req])
         assert errors == []
-        assert decisions[0].input_values == {"tags": ["a", "b"]}
+        assert decisions[0].input_values == {"tags": '["a","b"]'}
 
-    def test_user_input_bad_json_records_error(self):
+    def test_user_input_plain_text_value_does_not_require_json_parsing(self):
         req = _make_requirement(
             requires_user_input=True,
             user_input_schema=[UserInputField(name="tags", field_type=list)],
@@ -339,9 +338,8 @@ class TestParseSubmitPayload:
             }
         )
         decisions, errors = parse_submit_payload(payload, [req])
-        assert len(errors) == 1
-        assert errors[0].field == "tags"
-        assert decisions[0].input_values == {"tags": None}
+        assert errors == []
+        assert decisions[0].input_values == {"tags": "not json"}
 
     def test_confirmation_legacy_decided_block_id(self):
         # Backwards-compat — older messages use section + decided block_id.
@@ -406,69 +404,14 @@ class TestParseSubmitPayload:
         assert errors[0].requirement_id == "r1"
 
 
-class TestFormatDecisionTitle:
-    def test_approved_confirmation_inlines_args(self):
-        req = _make_requirement(
-            tool_name="cancel_subscription",
-            tool_args={"customer_id": "C-42", "reason": "pricing"},
-        )
-        decision = ParsedDecision(requirement_id="r1", pause_type="confirmation", approved=True)
-        assert format_decision_title(decision, req) == "Approved: cancel_subscription(customer_id=C-42, reason=pricing)"
-
-    def test_denied_confirmation_inlines_args(self):
-        req = _make_requirement(
-            tool_name="cancel_subscription",
-            tool_args={"customer_id": "C-42", "reason": "pricing"},
-        )
-        decision = ParsedDecision(requirement_id="r1", pause_type="confirmation", approved=False)
-        assert format_decision_title(decision, req) == "Denied: cancel_subscription(customer_id=C-42, reason=pricing)"
-
-    def test_confirmation_empty_args_no_parens(self):
-        req = _make_requirement(tool_name="cancel_subscription", tool_args={})
-        decision = ParsedDecision(requirement_id="r1", pause_type="confirmation", approved=True)
-        assert format_decision_title(decision, req) == "Approved: cancel_subscription"
-
-    def test_value_over_40_chars_truncates(self):
-        req = _make_requirement(
-            tool_name="cancel_subscription",
-            tool_args={"reason": "a" * 60},
-        )
-        decision = ParsedDecision(requirement_id="r1", pause_type="confirmation", approved=True)
-        result = format_decision_title(decision, req)
-        # Long value truncated to 40 chars (39 + ellipsis).
-        assert "reason=" in result
-        assert "…" in result
-        assert "a" * 60 not in result
-
-    def test_title_over_120_chars_truncates(self):
-        # Several medium-length args that together exceed the 120-char cap.
-        req = _make_requirement(
-            tool_name="very_long_tool_name_indeed",
-            tool_args={f"arg{i}": "x" * 30 for i in range(5)},
-        )
-        decision = ParsedDecision(requirement_id="r1", pause_type="confirmation", approved=True)
-        result = format_decision_title(decision, req)
-        assert len(result) <= 120
-        assert result.endswith("…")
-
-    def test_newlines_stripped_from_values(self):
-        req = _make_requirement(
-            tool_name="run_diagnostic",
-            tool_args={"command": "line1\nline2\nline3"},
-        )
-        decision = ParsedDecision(requirement_id="r1", pause_type="confirmation", approved=True)
-        result = format_decision_title(decision, req)
-        assert "\n" not in result
-
-
 # -- _build_confirmation_toggle_card --
 
 
 class TestBuildConfirmationToggleCard:
     def test_approve_selected_has_primary_style(self):
-        from agno.os.interfaces.slack.builders import _build_confirmation_toggle_card
+        from agno.os.interfaces.slack.builders import build_confirmation_toggle_card
 
-        card = _build_confirmation_toggle_card(
+        card = build_confirmation_toggle_card(
             req_id="r1",
             run_id="A1",
             awaiting_ts="123.456",
@@ -482,9 +425,9 @@ class TestBuildConfirmationToggleCard:
         assert approve_btn.style == "primary"
 
     def test_deny_selected_has_danger_style(self):
-        from agno.os.interfaces.slack.builders import _build_confirmation_toggle_card
+        from agno.os.interfaces.slack.builders import build_confirmation_toggle_card
 
-        card = _build_confirmation_toggle_card(
+        card = build_confirmation_toggle_card(
             req_id="r1",
             run_id="A1",
             awaiting_ts=None,
@@ -498,9 +441,9 @@ class TestBuildConfirmationToggleCard:
         assert deny_btn.style == "danger"
 
     def test_preserves_tool_name_and_body(self):
-        from agno.os.interfaces.slack.builders import _build_confirmation_toggle_card
+        from agno.os.interfaces.slack.builders import build_confirmation_toggle_card
 
-        card = _build_confirmation_toggle_card(
+        card = build_confirmation_toggle_card(
             req_id="r1",
             run_id="A1",
             awaiting_ts=None,
